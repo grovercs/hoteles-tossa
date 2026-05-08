@@ -126,6 +126,8 @@ const ICONS = {
   cloud: "☁️",
   offline: "💻",
   sync: "🔄",
+  edit: "✏️",
+  cancel: "↩️",
 };
 
 function Icon({ name, size = 22 }) {
@@ -395,6 +397,8 @@ function runSelfTests() {
   tests.push({ name: "Mapeo a Supabase incluye report_date", pass: report.report_date === defaultReports[0].date, value: report.report_date });
   const incident = incidentToRow({ date: "2026-05-08", room: "101", type: "Mantenimiento", priority: "Alta", status: "Abierta", owner: "Recepción", text: "Test" }, "hotel-id");
   tests.push({ name: "Mapeo incidencia incluye description", pass: incident.description === "Test" && incident.incident_date === "2026-05-08", value: incident.description });
+  const editedReport = reportToRow({ ...defaultReports[0], manager: "Editado" }, "hotel-id");
+  tests.push({ name: "Mapeo edición conserva manager", pass: editedReport.manager === "Editado", value: editedReport.manager });
   const roomRow = roomStatusToRow({ total: 10, occupied: 7, blocked: 1, clean: 5, dirty: 3, pending: 1 }, "hotel-id");
   tests.push({ name: "Mapeo habitaciones incluye total", pass: roomRow.total === 10 && roomRow.status_date.length === 10, value: roomRow.total });
   const taskRow = taskToRow({ area: "Cierre", title: "Enviar informe", done: true }, "hotel-id");
@@ -485,6 +489,8 @@ export default function HotelDailyControlApp() {
     recommendation: "",
   });
   const [incidentForm, setIncidentForm] = useState({ room: "", type: "Cliente", priority: "Media", owner: "Recepción", text: "" });
+  const [editingReportId, setEditingReportId] = useState(null);
+  const [editingOriginalReport, setEditingOriginalReport] = useState(null);
 
   useEffect(() => {
     async function loadSupabase() {
@@ -566,7 +572,7 @@ export default function HotelDailyControlApp() {
   async function saveReport(e) {
     e.preventDefault();
     const draftReport = {
-      id: `local-${Date.now()}`,
+      id: editingReportId || `local-${Date.now()}`,
       ...form,
       arrivalsExpected: Number(form.arrivalsExpected),
       arrivalsDone: Number(form.arrivalsDone),
@@ -585,20 +591,101 @@ export default function HotelDailyControlApp() {
 
     try {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        const inserted = await sb("daily_reports", { method: "POST", body: JSON.stringify(reportToRow(draftReport, hotel.id)) });
-        const savedReport = inserted?.[0] ? reportFromRow(inserted[0]) : draftReport;
-        setReports([savedReport, ...reports]);
+        if (editingReportId && !String(editingReportId).startsWith("local-") && !String(editingReportId).startsWith("demo-")) {
+          const updated = await sb(`daily_reports?id=eq.${editingReportId}&select=*`, { method: "PATCH", body: JSON.stringify(reportToRow(draftReport, hotel.id)) });
+          const savedReport = updated?.[0] ? reportFromRow(updated[0]) : draftReport;
+          setReports(reports.map((report) => report.id === editingReportId ? savedReport : report));
+          setLastAction(`Parte diario actualizado: ${savedReport.date}`);
+        } else {
+          const inserted = await sb("daily_reports?select=*", { method: "POST", body: JSON.stringify(reportToRow(draftReport, hotel.id)) });
+          const savedReport = inserted?.[0] ? reportFromRow(inserted[0]) : draftReport;
+          setReports([savedReport, ...reports]);
+          setLastAction(`Parte diario guardado en Supabase: ${savedReport.date}`);
+        }
       } else {
-        setReports([draftReport, ...reports]);
+        if (editingReportId) {
+          setReports(reports.map((report) => report.id === editingReportId ? draftReport : report));
+          setLastAction("Parte diario actualizado en modo local");
+        } else {
+          setReports([draftReport, ...reports]);
+          setLastAction("Parte diario guardado en modo local");
+        }
       }
     } catch (error) {
       console.error(error);
       setConnection({ status: "error", message: "Error guardando en Supabase. Guardado localmente." });
-      setReports([draftReport, ...reports]);
+      if (editingReportId) setReports(reports.map((report) => report.id === editingReportId ? draftReport : report));
+      else setReports([draftReport, ...reports]);
     }
 
-    setForm({ ...form, date: todayIso(), manager: "", incidents: "", notes: "", recommendation: "" });
+    clearReportForm();
     setActive("dashboard");
+  }
+
+  function getFormFromReport(report) {
+    return {
+      date: report.date || todayIso(),
+      manager: report.manager || "",
+      shift: report.shift || hotel.receptionHours || "09:00 - 17:00",
+      arrivalsExpected: report.arrivalsExpected || 0,
+      arrivalsDone: report.arrivalsDone || 0,
+      departuresExpected: report.departuresExpected || 0,
+      departuresDone: report.departuresDone || 0,
+      newBookings: report.newBookings || 0,
+      directBookings: report.directBookings || 0,
+      bookingBookings: report.bookingBookings || 0,
+      expediaBookings: report.expediaBookings || 0,
+      cancellations: report.cancellations || 0,
+      noShows: report.noShows || 0,
+      revenue: report.revenue || 0,
+      pendingPayments: report.pendingPayments || 0,
+      incidents: report.incidents || "",
+      notes: report.notes || "",
+      recommendation: report.recommendation || "",
+    };
+  }
+
+  function editReport(report) {
+    setEditingReportId(report.id);
+    setEditingOriginalReport(report);
+    setForm(getFormFromReport(report));
+    setActive("daily");
+    setLastAction(`Editando parte diario del ${report.date}`);
+  }
+
+  function cancelEditReport() {
+    if (editingOriginalReport) {
+      setForm(getFormFromReport(editingOriginalReport));
+      setLastAction(`Edición cancelada. Datos originales restaurados del ${editingOriginalReport.date}`);
+    }
+    setEditingReportId(null);
+    setEditingOriginalReport(null);
+    setActive("reports");
+  }
+
+  function clearReportForm() {
+    setEditingReportId(null);
+    setEditingOriginalReport(null);
+    setForm({
+      date: todayIso(),
+      manager: "",
+      shift: hotel.receptionHours || "09:00 - 17:00",
+      arrivalsExpected: 0,
+      arrivalsDone: 0,
+      departuresExpected: 0,
+      departuresDone: 0,
+      newBookings: 0,
+      directBookings: 0,
+      bookingBookings: 0,
+      expediaBookings: 0,
+      cancellations: 0,
+      noShows: 0,
+      revenue: 0,
+      pendingPayments: 0,
+      incidents: "",
+      notes: "",
+      recommendation: "",
+    });
   }
 
   async function addIncident(e) {
@@ -878,8 +965,13 @@ export default function HotelDailyControlApp() {
           {active === "daily" && (
             <form onSubmit={saveReport} className="space-y-5 sm:space-y-6">
               <Card>
-                <h2 className="text-lg font-bold sm:text-xl">Parte diario de recepción</h2>
-                <p className="mb-5 text-sm text-slate-500">Formulario de cierre de turno para informar a dirección.</p>
+                <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold sm:text-xl">{editingReportId ? "Editar parte diario" : "Parte diario de recepción"}</h2>
+                    <p className="text-sm text-slate-500">{editingReportId ? "Corrige los datos necesarios y guarda los cambios." : "Formulario de cierre de turno para informar a dirección."}</p>
+                  </div>
+                  {editingReportId && <Badge tone="amber">Modo edición</Badge>}
+                </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
                   <Field label="Fecha"><input className={inputStyle} type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></Field>
                   <Field label="Responsable"><input className={inputStyle} placeholder="Nombre" value={form.manager} onChange={(e) => setForm({ ...form, manager: e.target.value })} /></Field>
@@ -910,9 +1002,16 @@ export default function HotelDailyControlApp() {
                   <Field label="Observaciones para dirección"><textarea className={inputStyle} rows={3} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Lo que dirección debe saber para mañana" /></Field>
                   <Field label="Recomendación de recepción"><textarea className={inputStyle} rows={2} value={form.recommendation} onChange={(e) => setForm({ ...form, recommendation: e.target.value })} placeholder="Subir precios, abrir/cerrar canales, guardar habitaciones, reforzar limpieza..." /></Field>
                 </div>
-                <button className={cls(buttonDark, "mt-5 w-full sm:w-auto")}>
-                  <Icon name="save" size={18} /> Guardar parte diario
-                </button>
+                <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+                  <button className={cls(buttonDark, "w-full sm:w-auto")}>
+                    <Icon name="save" size={18} /> {editingReportId ? "Actualizar parte diario" : "Guardar parte diario"}
+                  </button>
+                  {editingReportId && (
+                    <button className={cls(buttonLight, "w-full sm:w-auto")} type="button" onClick={cancelEditReport}>
+                      <Icon name="cancel" size={18} /> Cancelar edición
+                    </button>
+                  )}
+                </div>
               </Card>
             </form>
           )}
@@ -1021,10 +1120,10 @@ export default function HotelDailyControlApp() {
               <Card>
                 <h3 className="mb-3 font-bold">Histórico de partes</h3>
                 <div className="overflow-x-auto rounded-2xl border border-slate-100">
-                  <table className="w-full min-w-[760px] text-left text-sm">
-                    <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Responsable</th><th>Reservas</th><th>Ingresos</th><th>Pendiente</th><th>Recomendación</th></tr></thead>
+                  <table className="w-full min-w-[900px] text-left text-sm">
+                    <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Responsable</th><th>Reservas</th><th>Ingresos</th><th>Pendiente</th><th>Recomendación</th><th>Acciones</th></tr></thead>
                     <tbody>
-                      {reports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{r.date}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td></tr>)}
+                      {reports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{r.date}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td><td className="pr-3"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editReport(r)}><Icon name="edit" size={14} /> Editar</button></td></tr>)}
                     </tbody>
                   </table>
                 </div>
