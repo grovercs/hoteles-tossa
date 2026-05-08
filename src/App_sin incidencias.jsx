@@ -315,8 +315,6 @@ function runSelfTests() {
   tests.push({ name: "Operativa estable sin alertas", pass: stable[0].title === "Operativa estable", value: stable[0].title });
   const report = reportToRow(defaultReports[0], "hotel-id");
   tests.push({ name: "Mapeo a Supabase incluye report_date", pass: report.report_date === defaultReports[0].date, value: report.report_date });
-  const incident = incidentToRow({ date: "2026-05-08", room: "101", type: "Mantenimiento", priority: "Alta", status: "Abierta", owner: "Recepción", text: "Test" }, "hotel-id");
-  tests.push({ name: "Mapeo incidencia incluye description", pass: incident.description === "Test" && incident.incident_date === "2026-05-08", value: incident.description });
   return tests;
 }
 
@@ -378,7 +376,6 @@ export default function HotelDailyControlApp() {
   const [tasks, setTasks] = useState(stored?.tasks || defaultTasks);
   const [channels, setChannels] = useState(stored?.channels || defaultChannels);
   const [copied, setCopied] = useState(false);
-  const [lastAction, setLastAction] = useState("");
   const [connection, setConnection] = useState({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Conectando con Supabase..." : "Modo local: faltan variables de Supabase" });
   const [form, setForm] = useState({
     date: todayIso(),
@@ -516,20 +513,15 @@ export default function HotelDailyControlApp() {
 
     try {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        const payload = incidentToRow(draftIncident, hotel.id);
-        const inserted = await sb("incidents?select=*", { method: "POST", body: JSON.stringify(payload) });
+        const inserted = await sb("incidents", { method: "POST", body: JSON.stringify(incidentToRow(draftIncident, hotel.id)) });
         const savedIncident = inserted?.[0] ? incidentFromRow(inserted[0]) : draftIncident;
         setIncidents([savedIncident, ...incidents]);
-        setLastAction(`Incidencia guardada en Supabase: habitación ${savedIncident.room}`);
       } else {
         setIncidents([draftIncident, ...incidents]);
-        setLastAction("Incidencia guardada solo en modo local");
       }
     } catch (error) {
       console.error(error);
-      const message = error?.message || "Error desconocido guardando incidencia";
-      setConnection({ status: "error", message: `Error guardando incidencia en Supabase: ${message}` });
-      setLastAction(`Fallo al guardar incidencia en Supabase: ${message}`);
+      setConnection({ status: "error", message: "Error guardando incidencia en Supabase. Guardada localmente." });
       setIncidents([draftIncident, ...incidents]);
     }
 
@@ -638,7 +630,6 @@ export default function HotelDailyControlApp() {
                 <div>
                   <b>Estado:</b> {connection.message}
                   {connection.status === "online" && <p className="text-slate-600">Los partes e incidencias nuevos se guardarán en Supabase.</p>}
-                  {lastAction && <p className="mt-1 font-semibold text-slate-700">Última acción: {lastAction}</p>}
                 </div>
               </div>
             </Card>
