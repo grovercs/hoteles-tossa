@@ -125,6 +125,7 @@ const ICONS = {
   wrench: "🔧",
   cloud: "☁️",
   offline: "💻",
+  sync: "🔄",
 };
 
 function Icon({ name, size = 22 }) {
@@ -274,6 +275,83 @@ function incidentToRow(incident, hotelId) {
   };
 }
 
+function hotelToRow(hotel) {
+  return {
+    name: hotel.name,
+    director: hotel.director,
+    reception_hours: hotel.receptionHours,
+    currency: hotel.currency,
+    direct_booking_goal: Number(hotel.directBookingGoal) || 25,
+    booking_risk_limit: Number(hotel.bookingRiskLimit) || 55,
+    high_occupancy_limit: Number(hotel.highOccupancyLimit) || 80,
+    low_occupancy_limit: Number(hotel.lowOccupancyLimit) || 45,
+  };
+}
+
+function roomStatusFromRow(row) {
+  if (!row) return defaultRooms;
+  return {
+    total: row.total || 0,
+    occupied: row.occupied || 0,
+    blocked: row.blocked || 0,
+    clean: row.clean || 0,
+    dirty: row.dirty || 0,
+    pending: row.pending || 0,
+  };
+}
+
+function roomStatusToRow(rooms, hotelId) {
+  return {
+    hotel_id: hotelId,
+    status_date: todayIso(),
+    total: Number(rooms.total) || 0,
+    occupied: Number(rooms.occupied) || 0,
+    blocked: Number(rooms.blocked) || 0,
+    clean: Number(rooms.clean) || 0,
+    dirty: Number(rooms.dirty) || 0,
+    pending: Number(rooms.pending) || 0,
+  };
+}
+
+function taskFromRow(row) {
+  return {
+    id: row.id,
+    area: row.area,
+    title: row.title,
+    done: Boolean(row.done),
+  };
+}
+
+function taskToRow(task, hotelId) {
+  return {
+    hotel_id: hotelId,
+    task_date: todayIso(),
+    area: task.area,
+    title: task.title,
+    done: Boolean(task.done),
+  };
+}
+
+function channelFromRow(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    bookings: row.bookings || 0,
+    revenue: Number(row.revenue || 0),
+    commission: Number(row.commission || 0),
+  };
+}
+
+function channelToRow(channel, hotelId) {
+  return {
+    hotel_id: hotelId,
+    name: channel.name,
+    bookings: Number(channel.bookings) || 0,
+    revenue: Number(channel.revenue) || 0,
+    commission: Number(channel.commission) || 0,
+  };
+}
+
 function calculateOccupancy(rooms) {
   return Math.round(((Number(rooms.occupied) || 0) / Math.max(Number(rooms.total) || 1, 1)) * 100);
 }
@@ -317,6 +395,12 @@ function runSelfTests() {
   tests.push({ name: "Mapeo a Supabase incluye report_date", pass: report.report_date === defaultReports[0].date, value: report.report_date });
   const incident = incidentToRow({ date: "2026-05-08", room: "101", type: "Mantenimiento", priority: "Alta", status: "Abierta", owner: "Recepción", text: "Test" }, "hotel-id");
   tests.push({ name: "Mapeo incidencia incluye description", pass: incident.description === "Test" && incident.incident_date === "2026-05-08", value: incident.description });
+  const roomRow = roomStatusToRow({ total: 10, occupied: 7, blocked: 1, clean: 5, dirty: 3, pending: 1 }, "hotel-id");
+  tests.push({ name: "Mapeo habitaciones incluye total", pass: roomRow.total === 10 && roomRow.status_date.length === 10, value: roomRow.total });
+  const taskRow = taskToRow({ area: "Cierre", title: "Enviar informe", done: true }, "hotel-id");
+  tests.push({ name: "Mapeo checklist mantiene done", pass: taskRow.done === true && taskRow.area === "Cierre", value: String(taskRow.done) });
+  const channelRow = channelToRow({ name: "Booking", bookings: 2, revenue: 300, commission: 18 }, "hotel-id");
+  tests.push({ name: "Mapeo canal mantiene comisión", pass: channelRow.commission === 18, value: channelRow.commission });
   return tests;
 }
 
@@ -411,13 +495,31 @@ export default function HotelDailyControlApp() {
         setHotel(normalizedHotel);
         setForm((old) => ({ ...old, shift: normalizedHotel.receptionHours || old.shift }));
 
-        const [remoteReports, remoteIncidents] = await Promise.all([
+        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteChannels] = await Promise.all([
           sb(`daily_reports?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=50`),
           sb(`incidents?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=100`),
+          sb(`room_status?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=1`),
+          sb(`daily_tasks?select=*&hotel_id=eq.${normalizedHotel.id}&task_date=eq.${todayIso()}&order=created_at.asc`),
+          sb(`sales_channels?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.asc`),
         ]);
 
         setReports(remoteReports?.length ? remoteReports.map(reportFromRow) : []);
         setIncidents(remoteIncidents?.length ? remoteIncidents.map(incidentFromRow) : []);
+        if (remoteRooms?.length) setRooms(roomStatusFromRow(remoteRooms[0]));
+
+        if (remoteTasks?.length) {
+          setTasks(remoteTasks.map(taskFromRow));
+        } else {
+          const insertedTasks = await sb("daily_tasks?select=*", { method: "POST", body: JSON.stringify(defaultTasks.map((task) => taskToRow(task, normalizedHotel.id))) });
+          setTasks(insertedTasks?.length ? insertedTasks.map(taskFromRow) : defaultTasks);
+        }
+
+        if (remoteChannels?.length) {
+          setChannels(remoteChannels.map(channelFromRow));
+        } else {
+          const insertedChannels = await sb("sales_channels?select=*", { method: "POST", body: JSON.stringify(defaultChannels.map((channel) => channelToRow(channel, normalizedHotel.id))) });
+          setChannels(insertedChannels?.length ? insertedChannels.map(channelFromRow) : defaultChannels);
+        }
         setConnection({ status: "online", message: "Conectado a Supabase" });
       } catch (error) {
         console.error(error);
@@ -541,10 +643,68 @@ export default function HotelDailyControlApp() {
     try {
       if (connection.status === "online" && !String(id).startsWith("local-") && !String(id).startsWith("demo-")) {
         await sb(`incidents?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ status, updated_at: new Date().toISOString() }) });
+        setLastAction(`Estado de incidencia actualizado: ${status}`);
       }
     } catch (error) {
       console.error(error);
       setConnection({ status: "error", message: "No se pudo actualizar la incidencia en Supabase." });
+    }
+  }
+
+  async function updateTaskDone(id, done) {
+    setTasks(tasks.map((x) => (x.id === id ? { ...x, done } : x)));
+    try {
+      if (connection.status === "online" && !String(id).startsWith("open-") && !String(id).startsWith("shift-") && !String(id).startsWith("close-")) {
+        await sb(`daily_tasks?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ done }) });
+        setLastAction(done ? "Tarea marcada como completada" : "Tarea marcada como pendiente");
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: "No se pudo actualizar el checklist en Supabase." });
+    }
+  }
+
+  async function saveRooms() {
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        await sb("room_status?select=*", { method: "POST", body: JSON.stringify(roomStatusToRow(rooms, hotel.id)) });
+        setLastAction("Estado de habitaciones guardado en Supabase");
+      } else {
+        setLastAction("Estado de habitaciones guardado en modo local");
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: "No se pudo guardar el estado de habitaciones en Supabase." });
+    }
+  }
+
+  async function saveHotelConfig() {
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        const updated = await sb(`hotels?id=eq.${hotel.id}&select=*`, { method: "PATCH", body: JSON.stringify(hotelToRow(hotel)) });
+        if (updated?.[0]) setHotel(normalizeHotel(updated[0]));
+        setLastAction("Configuración del hotel guardada en Supabase");
+      } else {
+        setLastAction("Configuración guardada en modo local");
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: "No se pudo guardar la configuración del hotel en Supabase." });
+    }
+  }
+
+  async function saveChannels() {
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        const remoteChannels = channels.filter((channel) => channel.id && !String(channel.id).startsWith("local-"));
+        await Promise.all(remoteChannels.map((channel) => sb(`sales_channels?id=eq.${channel.id}`, { method: "PATCH", body: JSON.stringify(channelToRow(channel, hotel.id)) })));
+        setLastAction("Canales de venta guardados en Supabase");
+      } else {
+        setLastAction("Canales de venta guardados en modo local");
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: "No se pudieron guardar los canales en Supabase." });
     }
   }
 
@@ -775,7 +935,7 @@ export default function HotelDailyControlApp() {
                   <div className="space-y-2">
                     {tasks.filter((task) => task.area === area).map((task) => (
                       <label key={task.id} className="flex cursor-pointer items-start gap-3 rounded-2xl bg-slate-50 p-3 text-sm">
-                        <input className="mt-1 h-5 w-5" type="checkbox" checked={task.done} onChange={(e) => setTasks(tasks.map((x) => x.id === task.id ? { ...x, done: e.target.checked } : x))} />
+                        <input className="mt-1 h-5 w-5" type="checkbox" checked={task.done} onChange={(e) => updateTaskDone(task.id, e.target.checked)} />
                         <span className={task.done ? "text-slate-400 line-through" : "text-slate-800"}>{task.title}</span>
                       </label>
                     ))}
@@ -824,6 +984,10 @@ export default function HotelDailyControlApp() {
               <Card>
                 <h2 className="text-lg font-bold sm:text-xl">Estado de habitaciones</h2>
                 <p className="mb-5 text-sm text-slate-500">Control rápido para recepción, limpieza y mantenimiento.</p>
+                <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <Badge tone="blue">Se guarda como foto diaria</Badge>
+                  <button className={buttonDark} type="button" onClick={saveRooms}><Icon name="save" size={18} /> Guardar estado</button>
+                </div>
                 <div className="grid grid-cols-2 gap-4 xl:grid-cols-3">
                   {[
                     ["Total habitaciones", "total"], ["Ocupadas", "occupied"], ["Bloqueadas", "blocked"],
@@ -873,6 +1037,10 @@ export default function HotelDailyControlApp() {
               <Card>
                 <h2 className="text-lg font-bold sm:text-xl">Configuración del hotel</h2>
                 <p className="mb-5 text-sm text-slate-500">El hotel se carga desde Supabase si está conectado.</p>
+                <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <Badge tone="purple">Umbrales de revenue</Badge>
+                  <button className={buttonDark} type="button" onClick={saveHotelConfig}><Icon name="save" size={18} /> Guardar configuración</button>
+                </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   <Field label="Nombre del hotel"><input className={inputStyle} value={hotel.name} onChange={(e) => setHotel({ ...hotel, name: e.target.value })} /></Field>
                   <Field label="Dirección"><input className={inputStyle} value={hotel.director} onChange={(e) => setHotel({ ...hotel, director: e.target.value })} /></Field>
@@ -886,7 +1054,13 @@ export default function HotelDailyControlApp() {
               </Card>
 
               <Card>
-                <h3 className="mb-4 font-bold">Canales de venta demo</h3>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Canales de venta</h3>
+                    <p className="text-sm text-slate-500">Control básico de producción y comisiones por canal.</p>
+                  </div>
+                  <button className={buttonDark} type="button" onClick={saveChannels}><Icon name="save" size={18} /> Guardar canales</button>
+                </div>
                 <div className="grid gap-4">
                   {channels.map((channel, index) => (
                     <div key={`${channel.name}-${index}`} className="grid gap-3 rounded-2xl bg-slate-50 p-3 sm:grid-cols-4">
