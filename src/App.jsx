@@ -128,6 +128,7 @@ const ICONS = {
   sync: "🔄",
   edit: "✏️",
   cancel: "↩️",
+  view: "👁️",
 };
 
 function Icon({ name, size = 22 }) {
@@ -381,7 +382,89 @@ function createRecommendations({ occupancy, bookingShare, directShare, blockedRo
 
 function buildReportText({ hotel, latest, rooms, occupancy, available, openIncidents, recommendations }) {
   const currency = hotel.currency || "€";
-  return `INFORME DIARIO DE RECEPCIÓN\n\nHotel: ${hotel.name}\nFecha: ${latest.date}\nResponsable: ${latest.manager || "No indicado"}\nHorario: ${latest.shift}\n\nOCUPACIÓN\nHabitaciones totales: ${rooms.total}\nOcupadas: ${rooms.occupied}\nDisponibles: ${available}\nBloqueadas: ${rooms.blocked}\nOcupación: ${occupancy}%\n\nMOVIMIENTOS\nLlegadas previstas: ${latest.arrivalsExpected}\nLlegadas realizadas: ${latest.arrivalsDone}\nSalidas previstas: ${latest.departuresExpected}\nSalidas realizadas: ${latest.departuresDone}\nCancelaciones: ${latest.cancellations}\nNo-shows: ${latest.noShows}\n\nVENTAS\nReservas nuevas: ${latest.newBookings}\nWeb directa: ${latest.directBookings}\nBooking: ${latest.bookingBookings}\nExpedia: ${latest.expediaBookings}\n\nCOBROS\nIngresos del día: ${latest.revenue} ${currency}\nPagos pendientes: ${latest.pendingPayments} ${currency}\n\nINCIDENCIAS ABIERTAS\n${openIncidents}\n\nINCIDENCIAS DEL TURNO\n${latest.incidents || "Sin incidencias relevantes."}\n\nOBSERVACIONES\n${latest.notes || "Sin observaciones."}\n\nRECOMENDACIÓN DE RECEPCIÓN\n${latest.recommendation || "Sin recomendación manual."}\n\nRECOMENDACIONES AUTOMÁTICAS\n${recommendations.map((r) => `- ${r.title}: ${r.text}`).join("\n")}`;
+  return `INFORME DIARIO DE RECEPCIÓN
+
+Hotel: ${hotel.name}
+Fecha: ${latest.date}
+Responsable: ${latest.manager || "No indicado"}
+Horario: ${latest.shift}
+
+OCUPACIÓN
+Habitaciones totales: ${rooms.total}
+Ocupadas: ${rooms.occupied}
+Disponibles: ${available}
+Bloqueadas: ${rooms.blocked}
+Ocupación: ${occupancy}%
+
+MOVIMIENTOS
+Llegadas previstas: ${latest.arrivalsExpected}
+Llegadas realizadas: ${latest.arrivalsDone}
+Salidas previstas: ${latest.departuresExpected}
+Salidas realizadas: ${latest.departuresDone}
+Cancelaciones: ${latest.cancellations}
+No-shows: ${latest.noShows}
+
+VENTAS
+Reservas nuevas: ${latest.newBookings}
+Web directa: ${latest.directBookings}
+Booking: ${latest.bookingBookings}
+Expedia: ${latest.expediaBookings}
+
+COBROS
+Ingresos del día: ${latest.revenue} ${currency}
+Pagos pendientes: ${latest.pendingPayments} ${currency}
+
+INCIDENCIAS ABIERTAS
+${openIncidents}
+
+INCIDENCIAS DEL TURNO
+${latest.incidents || "Sin incidencias relevantes."}
+
+OBSERVACIONES
+${latest.notes || "Sin observaciones."}
+
+RECOMENDACIÓN DE RECEPCIÓN
+${latest.recommendation || "Sin recomendación manual."}
+
+RECOMENDACIONES AUTOMÁTICAS
+${recommendations.map((r) => `- ${r.title}: ${r.text}`).join("\\n")}`;
+}
+
+function buildSingleReportText({ hotel, report }) {
+  const currency = hotel.currency || "€";
+  return `INFORME DIARIO DE RECEPCIÓN
+
+Hotel: ${hotel.name}
+Fecha: ${report.date}
+Responsable: ${report.manager || "No indicado"}
+Horario: ${report.shift || "No indicado"}
+
+MOVIMIENTOS
+Llegadas previstas: ${report.arrivalsExpected}
+Llegadas realizadas: ${report.arrivalsDone}
+Salidas previstas: ${report.departuresExpected}
+Salidas realizadas: ${report.departuresDone}
+Cancelaciones: ${report.cancellations}
+No-shows: ${report.noShows}
+
+VENTAS
+Reservas nuevas: ${report.newBookings}
+Web directa: ${report.directBookings}
+Booking: ${report.bookingBookings}
+Expedia: ${report.expediaBookings}
+
+COBROS
+Ingresos del día: ${report.revenue} ${currency}
+Pagos pendientes: ${report.pendingPayments} ${currency}
+
+INCIDENCIAS DEL TURNO
+${report.incidents || "Sin incidencias relevantes."}
+
+OBSERVACIONES
+${report.notes || "Sin observaciones."}
+
+RECOMENDACIÓN DE RECEPCIÓN
+${report.recommendation || "Sin recomendación manual."}`;
 }
 
 function runSelfTests() {
@@ -466,6 +549,7 @@ export default function HotelDailyControlApp() {
   const [tasks, setTasks] = useState(stored?.tasks || defaultTasks);
   const [channels, setChannels] = useState(stored?.channels || defaultChannels);
   const [copied, setCopied] = useState(false);
+  const [copiedReportId, setCopiedReportId] = useState(null);
   const [lastAction, setLastAction] = useState("");
   const [connection, setConnection] = useState({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Conectando con Supabase..." : "Modo local: faltan variables de Supabase" });
   const [form, setForm] = useState({
@@ -491,6 +575,8 @@ export default function HotelDailyControlApp() {
   const [incidentForm, setIncidentForm] = useState({ room: "", type: "Cliente", priority: "Media", owner: "Recepción", text: "" });
   const [editingReportId, setEditingReportId] = useState(null);
   const [editingOriginalReport, setEditingOriginalReport] = useState(null);
+  const [viewingReport, setViewingReport] = useState(null);
+  const [deleteCandidate, setDeleteCandidate] = useState(null);
 
   useEffect(() => {
     async function loadSupabase() {
@@ -663,6 +749,37 @@ export default function HotelDailyControlApp() {
     setActive("reports");
   }
 
+  function viewReport(report) {
+    setViewingReport(report);
+    setDeleteCandidate(null);
+    setLastAction(`Visualizando parte diario del ${report.date}`);
+  }
+
+  function askDeleteReport(report) {
+    setDeleteCandidate(report);
+    setViewingReport(null);
+  }
+
+  async function confirmDeleteReport() {
+    if (!deleteCandidate) return;
+    const reportToDelete = deleteCandidate;
+
+    try {
+      if (connection.status === "online" && !String(reportToDelete.id).startsWith("local-") && !String(reportToDelete.id).startsWith("demo-")) {
+        await sb(`daily_reports?id=eq.${reportToDelete.id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      }
+      setReports(reports.filter((report) => report.id !== reportToDelete.id));
+      setDeleteCandidate(null);
+      if (viewingReport?.id === reportToDelete.id) setViewingReport(null);
+      setLastAction(`Parte diario eliminado: ${reportToDelete.date}`);
+    } catch (error) {
+      console.error(error);
+      const message = error?.message || "Error desconocido eliminando el parte";
+      setConnection({ status: "error", message: `No se pudo borrar el parte en Supabase: ${message}` });
+      setLastAction(`Fallo al borrar parte: ${message}`);
+    }
+  }
+
   function clearReportForm() {
     setEditingReportId(null);
     setEditingOriginalReport(null);
@@ -802,6 +919,17 @@ export default function HotelDailyControlApp() {
       setTimeout(() => setCopied(false), 1800);
     } catch {
       setCopied(false);
+    }
+  }
+
+  async function copySingleReport(report) {
+    try {
+      await navigator.clipboard.writeText(buildSingleReportText({ hotel, report }));
+      setCopiedReportId(report.id);
+      setLastAction(`Informe copiado: ${report.date}`);
+      setTimeout(() => setCopiedReportId(null), 1800);
+    } catch {
+      setLastAction("No se pudo copiar el informe seleccionado");
     }
   }
 
@@ -1109,21 +1237,75 @@ export default function HotelDailyControlApp() {
               <Card>
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h2 className="text-lg font-bold sm:text-xl">Informe listo para dirección</h2>
-                    <p className="text-sm text-slate-500">Versión copiable para email, WhatsApp interno o PDF.</p>
+                    <h2 className="text-lg font-bold sm:text-xl">Resumen rápido para dirección</h2>
+                    <p className="text-sm text-slate-500">Generado automáticamente con el último parte diario, habitaciones actuales e incidencias abiertas.</p>
                   </div>
-                  <button className={buttonDark} onClick={copyReport} type="button"><Icon name="copy" size={18} /> {copied ? "Copiado" : "Copiar informe"}</button>
+                  <button className={buttonDark} onClick={copyReport} type="button"><Icon name="copy" size={18} /> {copied ? "Copiado" : "Copiar resumen"}</button>
                 </div>
                 <textarea className="h-96 w-full rounded-2xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs sm:text-sm" readOnly value={reportText} />
               </Card>
 
+              {viewingReport && (
+                <Card className="border-blue-200 bg-blue-50">
+                  <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold">Parte diario del {viewingReport.date}</h3>
+                      <p className="text-sm text-slate-600">Vista de solo lectura. Para modificar datos usa “Editar”.</p>
+                      <button className={cls(buttonDark, "mt-3")} type="button" onClick={() => copySingleReport(viewingReport)}>
+                        <Icon name="copy" size={18} /> {copiedReportId === viewingReport.id ? "Copiado" : "Copiar este informe"}
+                      </button>
+                    </div>
+                    <button className={buttonLight} type="button" onClick={() => setViewingReport(null)}>
+                      <Icon name="cancel" size={18} /> Cerrar vista
+                    </button>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Responsable</p><p className="font-bold">{viewingReport.manager || "-"}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Horario</p><p className="font-bold">{viewingReport.shift || "-"}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Reservas nuevas</p><p className="font-bold">{viewingReport.newBookings}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Ingresos</p><p className="font-bold">{viewingReport.revenue}{hotel.currency}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Llegadas</p><p className="font-bold">{viewingReport.arrivalsDone}/{viewingReport.arrivalsExpected}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Salidas</p><p className="font-bold">{viewingReport.departuresDone}/{viewingReport.departuresExpected}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Cancelaciones</p><p className="font-bold">{viewingReport.cancellations}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">No-shows</p><p className="font-bold">{viewingReport.noShows}</p></div>
+                  </div>
+
+                  <div className="mt-4 grid gap-3">
+                    <div className="rounded-2xl bg-white p-4"><p className="text-sm font-bold">Incidencias del turno</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingReport.incidents || "Sin incidencias relevantes."}</p></div>
+                    <div className="rounded-2xl bg-white p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingReport.notes || "Sin observaciones."}</p></div>
+                    <div className="rounded-2xl bg-white p-4"><p className="text-sm font-bold">Recomendación</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingReport.recommendation || "Sin recomendación."}</p></div>
+                  </div>
+                </Card>
+              )}
+
+              {deleteCandidate && (
+                <Card className="border-red-200 bg-red-50">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold text-red-800">Confirmar borrado</h3>
+                      <p className="text-sm text-red-700">Vas a borrar el parte del <b>{deleteCandidate.date}</b> de <b>{deleteCandidate.manager || "responsable no indicado"}</b>.</p>
+                      <p className="mt-1 text-sm text-red-700">Esta acción elimina el registro del histórico. Úsalo solo si el parte se creó por error.</p>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-red-700 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-red-800" type="button" onClick={confirmDeleteReport}>
+                        <Icon name="trash" size={18} /> Sí, borrar
+                      </button>
+                      <button className={buttonLight} type="button" onClick={() => setDeleteCandidate(null)}>
+                        <Icon name="cancel" size={18} /> Cancelar
+                      </button>
+                    </div>
+                  </div>
+                </Card>
+              )}
+
               <Card>
                 <h3 className="mb-3 font-bold">Histórico de partes</h3>
                 <div className="overflow-x-auto rounded-2xl border border-slate-100">
-                  <table className="w-full min-w-[900px] text-left text-sm">
+                  <table className="w-full min-w-[1040px] text-left text-sm">
                     <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Responsable</th><th>Reservas</th><th>Ingresos</th><th>Pendiente</th><th>Recomendación</th><th>Acciones</th></tr></thead>
                     <tbody>
-                      {reports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{r.date}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td><td className="pr-3"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editReport(r)}><Icon name="edit" size={14} /> Editar</button></td></tr>)}
+                      {reports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{r.date}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td><td className="pr-3"><div className="flex flex-wrap gap-2"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewReport(r)}><Icon name="view" size={14} /> Ver</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => copySingleReport(r)}><Icon name="copy" size={14} /> {copiedReportId === r.id ? "Copiado" : "Copiar"}</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editReport(r)}><Icon name="edit" size={14} /> Editar</button><button className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteReport(r)}><Icon name="trash" size={14} /> Borrar</button></div></td></tr>)}
                     </tbody>
                   </table>
                 </div>
