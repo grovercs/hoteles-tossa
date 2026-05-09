@@ -108,6 +108,7 @@ const ICONS = {
   bed: "🛏️",
   calendar: "📅",
   check: "✅",
+  lock: "🔒",
   clipboard: "📋",
   copy: "📎",
   euro: "€",
@@ -145,6 +146,30 @@ function cls(...items) {
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function addDaysIso(dateValue, days) {
+  const date = new Date(`${dateValue}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function formatDateEs(dateValue) {
+  if (!dateValue) return "-";
+  const [year, month, day] = String(dateValue).slice(0, 10).split("-");
+  if (!year || !month || !day) return dateValue;
+  return `${day}/${month}/${year}`;
+}
+
+function formatDateTimeEs(dateValue) {
+  if (!dateValue) return "-";
+  return new Date(dateValue).toLocaleString("es-ES", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function readLocal() {
@@ -325,10 +350,10 @@ function taskFromRow(row) {
   };
 }
 
-function taskToRow(task, hotelId) {
+function taskToRow(task, hotelId, taskDate = todayIso()) {
   return {
     hotel_id: hotelId,
-    task_date: todayIso(),
+    task_date: taskDate,
     area: task.area,
     title: task.title,
     done: Boolean(task.done),
@@ -385,7 +410,7 @@ function buildReportText({ hotel, latest, rooms, occupancy, available, openIncid
   return `INFORME DIARIO DE RECEPCIÓN
 
 Hotel: ${hotel.name}
-Fecha: ${latest.date}
+Fecha: ${formatDateEs(latest.date)}
 Responsable: ${latest.manager || "No indicado"}
 Horario: ${latest.shift}
 
@@ -427,7 +452,7 @@ RECOMENDACIÓN DE RECEPCIÓN
 ${latest.recommendation || "Sin recomendación manual."}
 
 RECOMENDACIONES AUTOMÁTICAS
-${recommendations.map((r) => `- ${r.title}: ${r.text}`).join("\\n")}`;
+${recommendations.map((r) => `- ${r.title}: ${r.text}`).join("\n")}`;
 }
 
 function buildSingleReportText({ hotel, report }) {
@@ -435,7 +460,7 @@ function buildSingleReportText({ hotel, report }) {
   return `INFORME DIARIO DE RECEPCIÓN
 
 Hotel: ${hotel.name}
-Fecha: ${report.date}
+Fecha: ${formatDateEs(report.date)}
 Responsable: ${report.manager || "No indicado"}
 Horario: ${report.shift || "No indicado"}
 
@@ -491,8 +516,8 @@ function runSelfTests() {
   return tests;
 }
 
-function Card({ children, className = "" }) {
-  return <div className={cls("rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5", className)}>{children}</div>;
+function Card({ children, className = "", ...props }) {
+  return <div {...props} className={cls("rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5", className)}>{children}</div>;
 }
 
 function Badge({ children, tone = "slate" }) {
@@ -572,11 +597,25 @@ export default function HotelDailyControlApp() {
     notes: "",
     recommendation: "",
   });
-  const [incidentForm, setIncidentForm] = useState({ room: "", type: "Cliente", priority: "Media", owner: "Recepción", text: "" });
+  const [incidentForm, setIncidentForm] = useState({ room: "", type: "Cliente", priority: "Media", status: "Abierta", owner: "Recepción", text: "" });
   const [editingReportId, setEditingReportId] = useState(null);
   const [editingOriginalReport, setEditingOriginalReport] = useState(null);
   const [viewingReport, setViewingReport] = useState(null);
   const [deleteCandidate, setDeleteCandidate] = useState(null);
+  const [deleteIncidentCandidate, setDeleteIncidentCandidate] = useState(null);
+  const [viewingIncident, setViewingIncident] = useState(null);
+  const [editingIncidentId, setEditingIncidentId] = useState(null);
+  const [editingOriginalIncident, setEditingOriginalIncident] = useState(null);
+  const [reportFilters, setReportFilters] = useState({ date: "", manager: "" });
+  const [incidentFilters, setIncidentFilters] = useState({ query: "", status: "Todos", type: "Todos", priority: "Todas" });
+  const [checklistDate, setChecklistDate] = useState(todayIso());
+  const [checklistResponsible, setChecklistResponsible] = useState("");
+  const [checklistNotes, setChecklistNotes] = useState("");
+  const [checklistSignoff, setChecklistSignoff] = useState(null);
+  const [checklistHistory, setChecklistHistory] = useState([]);
+  const [viewingChecklist, setViewingChecklist] = useState(null);
+  const [editingChecklistId, setEditingChecklistId] = useState(null);
+  const [deleteChecklistCandidate, setDeleteChecklistCandidate] = useState(null);
 
   useEffect(() => {
     async function loadSupabase() {
@@ -587,11 +626,12 @@ export default function HotelDailyControlApp() {
         setHotel(normalizedHotel);
         setForm((old) => ({ ...old, shift: normalizedHotel.receptionHours || old.shift }));
 
-        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteChannels] = await Promise.all([
+        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteSignoffs, remoteChannels] = await Promise.all([
           sb(`daily_reports?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=50`),
           sb(`incidents?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=100`),
           sb(`room_status?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=1`),
           sb(`daily_tasks?select=*&hotel_id=eq.${normalizedHotel.id}&task_date=eq.${todayIso()}&order=created_at.asc`),
+          sb(`checklist_signoffs?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=30`),
           sb(`sales_channels?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.asc`),
         ]);
 
@@ -602,8 +642,18 @@ export default function HotelDailyControlApp() {
         if (remoteTasks?.length) {
           setTasks(remoteTasks.map(taskFromRow));
         } else {
-          const insertedTasks = await sb("daily_tasks?select=*", { method: "POST", body: JSON.stringify(defaultTasks.map((task) => taskToRow(task, normalizedHotel.id))) });
+          const insertedTasks = await sb("daily_tasks?select=*", { method: "POST", body: JSON.stringify(defaultTasks.map((task) => taskToRow(task, normalizedHotel.id, todayIso()))) });
           setTasks(insertedTasks?.length ? insertedTasks.map(taskFromRow) : defaultTasks);
+        }
+
+        if (remoteSignoffs?.length) {
+          setChecklistHistory(remoteSignoffs);
+          const todaySignoff = remoteSignoffs.find((item) => item.signoff_date === todayIso());
+          setChecklistSignoff(todaySignoff || null);
+          if (todaySignoff) {
+            setChecklistResponsible(todaySignoff.responsible || "");
+            setChecklistNotes(todaySignoff.notes || "");
+          }
         }
 
         if (remoteChannels?.length) {
@@ -639,6 +689,27 @@ export default function HotelDailyControlApp() {
   const reportText = useMemo(() => buildReportText({ hotel, latest, rooms, occupancy, available, openIncidents, recommendations }), [hotel, latest, rooms, occupancy, available, openIncidents, recommendations]);
   const selfTests = useMemo(() => runSelfTests(), []);
   const allTestsPass = selfTests.every((test) => test.pass);
+
+  const filteredReports = useMemo(() => {
+    return reports.filter((report) => {
+      const matchesDate = !reportFilters.date || report.date === reportFilters.date;
+      const manager = (report.manager || "").toLowerCase();
+      const matchesManager = !reportFilters.manager || manager.includes(reportFilters.manager.toLowerCase());
+      return matchesDate && matchesManager;
+    });
+  }, [reports, reportFilters]);
+
+  const filteredIncidents = useMemo(() => {
+    return incidents.filter((incident) => {
+      const query = incidentFilters.query.toLowerCase().trim();
+      const text = `${incident.room} ${incident.owner} ${incident.text}`.toLowerCase();
+      const matchesQuery = !query || text.includes(query);
+      const matchesStatus = incidentFilters.status === "Todos" || incident.status === incidentFilters.status;
+      const matchesType = incidentFilters.type === "Todos" || incident.type === incidentFilters.type;
+      const matchesPriority = incidentFilters.priority === "Todas" || incident.priority === incidentFilters.priority;
+      return matchesQuery && matchesStatus && matchesType && matchesPriority;
+    });
+  }, [incidents, incidentFilters]);
 
   const tabs = [
     ["dashboard", "Dirección", "chart"],
@@ -681,12 +752,12 @@ export default function HotelDailyControlApp() {
           const updated = await sb(`daily_reports?id=eq.${editingReportId}&select=*`, { method: "PATCH", body: JSON.stringify(reportToRow(draftReport, hotel.id)) });
           const savedReport = updated?.[0] ? reportFromRow(updated[0]) : draftReport;
           setReports(reports.map((report) => report.id === editingReportId ? savedReport : report));
-          setLastAction(`Parte diario actualizado: ${savedReport.date}`);
+          setLastAction(`Parte diario actualizado: ${formatDateEs(savedReport.date)}`);
         } else {
           const inserted = await sb("daily_reports?select=*", { method: "POST", body: JSON.stringify(reportToRow(draftReport, hotel.id)) });
           const savedReport = inserted?.[0] ? reportFromRow(inserted[0]) : draftReport;
           setReports([savedReport, ...reports]);
-          setLastAction(`Parte diario guardado en Supabase: ${savedReport.date}`);
+          setLastAction(`Parte diario guardado en Supabase: ${formatDateEs(savedReport.date)}`);
         }
       } else {
         if (editingReportId) {
@@ -736,13 +807,13 @@ export default function HotelDailyControlApp() {
     setEditingOriginalReport(report);
     setForm(getFormFromReport(report));
     setActive("daily");
-    setLastAction(`Editando parte diario del ${report.date}`);
+    setLastAction(`Editando parte diario del ${formatDateEs(report.date)}`);
   }
 
   function cancelEditReport() {
     if (editingOriginalReport) {
       setForm(getFormFromReport(editingOriginalReport));
-      setLastAction(`Edición cancelada. Datos originales restaurados del ${editingOriginalReport.date}`);
+      setLastAction(`Edición cancelada. Datos originales restaurados del ${formatDateEs(editingOriginalReport.date)}`);
     }
     setEditingReportId(null);
     setEditingOriginalReport(null);
@@ -752,7 +823,7 @@ export default function HotelDailyControlApp() {
   function viewReport(report) {
     setViewingReport(report);
     setDeleteCandidate(null);
-    setLastAction(`Visualizando parte diario del ${report.date}`);
+    setLastAction(`Visualizando parte diario del ${formatDateEs(report.date)}`);
   }
 
   function askDeleteReport(report) {
@@ -766,12 +837,20 @@ export default function HotelDailyControlApp() {
 
     try {
       if (connection.status === "online" && !String(reportToDelete.id).startsWith("local-") && !String(reportToDelete.id).startsWith("demo-")) {
-        await sb(`daily_reports?id=eq.${reportToDelete.id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        const deleted = await sb(`daily_reports?id=eq.${reportToDelete.id}&select=*`, {
+          method: "DELETE",
+          headers: { Prefer: "return=representation" },
+        });
+
+        if (!deleted || deleted.length === 0) {
+          throw new Error("Supabase no ha eliminado ninguna fila. Revisa la política DELETE de RLS en daily_reports.");
+        }
       }
+
       setReports(reports.filter((report) => report.id !== reportToDelete.id));
       setDeleteCandidate(null);
       if (viewingReport?.id === reportToDelete.id) setViewingReport(null);
-      setLastAction(`Parte diario eliminado: ${reportToDelete.date}`);
+      setLastAction(`Parte diario eliminado: ${formatDateEs(reportToDelete.date)}`);
     } catch (error) {
       console.error(error);
       const message = error?.message || "Error desconocido eliminando el parte";
@@ -810,43 +889,147 @@ export default function HotelDailyControlApp() {
     if (!incidentForm.text.trim()) return;
 
     const draftIncident = {
-      id: `local-${Date.now()}`,
-      date: todayIso(),
+      id: editingIncidentId || `local-${Date.now()}`,
+      date: editingOriginalIncident?.date || todayIso(),
       room: incidentForm.room || "-",
       type: incidentForm.type,
       priority: incidentForm.priority,
       owner: incidentForm.owner,
-      status: "Abierta",
+      status: incidentForm.status || editingOriginalIncident?.status || "Abierta",
       text: incidentForm.text,
     };
 
     try {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        const payload = incidentToRow(draftIncident, hotel.id);
-        const inserted = await sb("incidents?select=*", { method: "POST", body: JSON.stringify(payload) });
-        const savedIncident = inserted?.[0] ? incidentFromRow(inserted[0]) : draftIncident;
-        setIncidents([savedIncident, ...incidents]);
-        setLastAction(`Incidencia guardada en Supabase: habitación ${savedIncident.room}`);
+        if (editingIncidentId && !String(editingIncidentId).startsWith("local-") && !String(editingIncidentId).startsWith("demo-")) {
+          const updated = await sb(`incidents?id=eq.${editingIncidentId}&select=*`, {
+            method: "PATCH",
+            body: JSON.stringify(incidentToRow(draftIncident, hotel.id)),
+          });
+
+          if (!updated || updated.length === 0) {
+            throw new Error("Supabase no ha actualizado ninguna fila. Revisa la política UPDATE de RLS en incidents.");
+          }
+
+          const savedIncident = incidentFromRow(updated[0]);
+          setIncidents(incidents.map((incident) => incident.id === editingIncidentId ? savedIncident : incident));
+          setLastAction(`Incidencia actualizada: habitación ${savedIncident.room}`);
+        } else {
+          const payload = incidentToRow(draftIncident, hotel.id);
+          const inserted = await sb("incidents?select=*", {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          const savedIncident = inserted?.[0] ? incidentFromRow(inserted[0]) : draftIncident;
+          setIncidents([savedIncident, ...incidents]);
+          setLastAction(`Incidencia guardada en Supabase: habitación ${savedIncident.room}`);
+        }
       } else {
-        setIncidents([draftIncident, ...incidents]);
-        setLastAction("Incidencia guardada solo en modo local");
+        if (editingIncidentId) {
+          setIncidents(incidents.map((incident) => incident.id === editingIncidentId ? draftIncident : incident));
+          setLastAction("Incidencia actualizada en modo local");
+        } else {
+          setIncidents([draftIncident, ...incidents]);
+          setLastAction("Incidencia guardada solo en modo local");
+        }
       }
     } catch (error) {
       console.error(error);
       const message = error?.message || "Error desconocido guardando incidencia";
       setConnection({ status: "error", message: `Error guardando incidencia en Supabase: ${message}` });
       setLastAction(`Fallo al guardar incidencia en Supabase: ${message}`);
-      setIncidents([draftIncident, ...incidents]);
+      if (editingIncidentId) setIncidents(incidents.map((incident) => incident.id === editingIncidentId ? draftIncident : incident));
+      else setIncidents([draftIncident, ...incidents]);
     }
 
-    setIncidentForm({ room: "", type: "Cliente", priority: "Media", owner: "Recepción", text: "" });
+    clearIncidentForm();
+  }
+
+  function getIncidentFormFromIncident(incident) {
+    return {
+      room: incident.room || "-",
+      type: incident.type || "Cliente",
+      priority: incident.priority || "Media",
+      status: incident.status || "Abierta",
+      owner: incident.owner || "Recepción",
+      text: incident.text || "",
+    };
+  }
+
+  function viewIncident(incident) {
+    setViewingIncident(incident);
+    setDeleteIncidentCandidate(null);
+    setLastAction(`Visualizando incidencia de habitación ${incident.room}`);
+  }
+
+  function editIncident(incident) {
+    setEditingIncidentId(incident.id);
+    setEditingOriginalIncident(incident);
+    setIncidentForm(getIncidentFormFromIncident(incident));
+    setViewingIncident(null);
+    setDeleteIncidentCandidate(null);
+    setLastAction(`Editando incidencia de habitación ${incident.room}`);
+    window.setTimeout(() => {
+      document.getElementById("incident-form-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }
+
+  function cancelEditIncident() {
+    if (editingOriginalIncident) {
+      setIncidentForm(getIncidentFormFromIncident(editingOriginalIncident));
+      setLastAction(`Edición de incidencia cancelada. Datos restaurados de habitación ${editingOriginalIncident.room}`);
+    }
+    setEditingIncidentId(null);
+    setEditingOriginalIncident(null);
+    window.setTimeout(() => clearIncidentForm(), 250);
+  }
+
+  function clearIncidentForm() {
+    setEditingIncidentId(null);
+    setEditingOriginalIncident(null);
+    setIncidentForm({ room: "", type: "Cliente", priority: "Media", status: "Abierta", owner: "Recepción", text: "" });
+  }
+
+  function askDeleteIncident(incident) {
+    setDeleteIncidentCandidate(incident);
+    setViewingIncident(null);
+  }
+
+  async function confirmDeleteIncident() {
+    if (!deleteIncidentCandidate) return;
+    const incidentToDelete = deleteIncidentCandidate;
+
+    try {
+      if (connection.status === "online" && !String(incidentToDelete.id).startsWith("local-") && !String(incidentToDelete.id).startsWith("demo-")) {
+        const deleted = await sb(`incidents?id=eq.${incidentToDelete.id}&select=*`, {
+          method: "DELETE",
+          headers: { Prefer: "return=representation" },
+        });
+
+        if (!deleted || deleted.length === 0) {
+          throw new Error("Supabase no ha eliminado ninguna fila. Revisa la política DELETE de RLS en incidents.");
+        }
+      }
+
+      setIncidents(incidents.filter((incident) => incident.id !== incidentToDelete.id));
+      setDeleteIncidentCandidate(null);
+      setLastAction(`Incidencia eliminada: habitación ${incidentToDelete.room}`);
+    } catch (error) {
+      console.error(error);
+      const message = error?.message || "Error desconocido eliminando la incidencia";
+      setConnection({ status: "error", message: `No se pudo borrar la incidencia en Supabase: ${message}` });
+      setLastAction(`Fallo al borrar incidencia: ${message}`);
+    }
   }
 
   async function updateIncidentStatus(id, status) {
     setIncidents(incidents.map((x) => (x.id === id ? { ...x, status } : x)));
     try {
       if (connection.status === "online" && !String(id).startsWith("local-") && !String(id).startsWith("demo-")) {
-        await sb(`incidents?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ status, updated_at: new Date().toISOString() }) });
+        const updated = await sb(`incidents?id=eq.${id}&select=*`, { method: "PATCH", body: JSON.stringify({ status, updated_at: new Date().toISOString() }) });
+        if (!updated || updated.length === 0) {
+          throw new Error("Supabase no ha actualizado ninguna fila. Revisa la política UPDATE de RLS en incidents.");
+        }
         setLastAction(`Estado de incidencia actualizado: ${status}`);
       }
     } catch (error) {
@@ -856,6 +1039,11 @@ export default function HotelDailyControlApp() {
   }
 
   async function updateTaskDone(id, done) {
+    if (checklistSignoff && !editingChecklistId) {
+      setLastAction("Checklist cerrado. Pulsa Editar en el histórico para corregir este checklist.");
+      return;
+    }
+
     setTasks(tasks.map((x) => (x.id === id ? { ...x, done } : x)));
     try {
       if (connection.status === "online" && !String(id).startsWith("open-") && !String(id).startsWith("shift-") && !String(id).startsWith("close-")) {
@@ -865,6 +1053,180 @@ export default function HotelDailyControlApp() {
     } catch (error) {
       console.error(error);
       setConnection({ status: "error", message: "No se pudo actualizar el checklist en Supabase." });
+    }
+  }
+
+  async function loadChecklistForDate(dateValue) {
+    setChecklistDate(dateValue);
+    setChecklistSignoff(null);
+    setEditingChecklistId(null);
+    setChecklistResponsible("");
+    setChecklistNotes("");
+
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        const [remoteTasks, remoteSignoffs] = await Promise.all([
+          sb(`daily_tasks?select=*&hotel_id=eq.${hotel.id}&task_date=eq.${dateValue}&order=created_at.asc`),
+          sb(`checklist_signoffs?select=*&hotel_id=eq.${hotel.id}&signoff_date=eq.${dateValue}&limit=1`),
+        ]);
+
+        if (remoteTasks?.length) {
+          setTasks(remoteTasks.map(taskFromRow));
+        } else {
+          const insertedTasks = await sb("daily_tasks?select=*", { method: "POST", body: JSON.stringify(defaultTasks.map((task) => taskToRow(task, hotel.id, dateValue))) });
+          setTasks(insertedTasks?.length ? insertedTasks.map(taskFromRow) : defaultTasks);
+        }
+
+        const signoff = remoteSignoffs?.[0] || null;
+        setChecklistSignoff(signoff);
+        if (signoff) {
+          setChecklistResponsible(signoff.responsible || "");
+          setChecklistNotes(signoff.notes || "");
+        }
+        setLastAction(`Checklist cargado para ${formatDateEs(dateValue)}`);
+      } else {
+        setTasks(defaultTasks);
+        setLastAction(`Checklist local cargado para ${formatDateEs(dateValue)}`);
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: "No se pudo cargar el checklist de esa fecha." });
+    }
+  }
+
+  function createNextChecklist() {
+    const nextDate = addDaysIso(checklistDate, 1);
+    loadChecklistForDate(nextDate);
+    window.setTimeout(() => {
+      document.getElementById("checklist-top-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }
+
+  async function acceptChecklist() {
+    const completedCount = tasks.filter((task) => task.done).length;
+    const totalCount = tasks.length;
+    const hasPending = completedCount < totalCount;
+
+    const payload = {
+      hotel_id: hotel.id,
+      signoff_date: checklistDate,
+      responsible: checklistResponsible || "No indicado",
+      notes: checklistNotes || "",
+      completed_count: completedCount,
+      total_count: totalCount,
+      status: hasPending ? "Cerrado con pendientes" : "Correcto",
+    };
+
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        if (checklistSignoff?.id) {
+          const updated = await sb(`checklist_signoffs?id=eq.${checklistSignoff.id}&select=*`, { method: "PATCH", body: JSON.stringify(payload) });
+          const saved = updated?.[0] || checklistSignoff;
+          setChecklistSignoff(saved);
+          setChecklistHistory(checklistHistory.map((item) => item.id === saved.id ? saved : item));
+          setLastAction(`Cierre de checklist actualizado: ${formatDateEs(saved.signoff_date)}`);
+        } else {
+          const inserted = await sb("checklist_signoffs?select=*", { method: "POST", body: JSON.stringify(payload) });
+          const saved = inserted?.[0] || payload;
+          setChecklistSignoff(saved);
+          setChecklistHistory([saved, ...checklistHistory]);
+          setLastAction(hasPending ? "Checklist cerrado con tareas pendientes" : "Checklist aceptado como correcto");
+        }
+
+        const history = await sb(`checklist_signoffs?select=*&hotel_id=eq.${hotel.id}&order=created_at.desc&limit=30`);
+        setChecklistHistory(history || []);
+        setEditingChecklistId(null);
+      } else {
+        const localSignoff = checklistSignoff?.id
+          ? { ...checklistSignoff, ...payload }
+          : { ...payload, id: `local-signoff-${Date.now()}`, created_at: new Date().toISOString() };
+        setChecklistSignoff(localSignoff);
+        setChecklistHistory(checklistSignoff?.id ? checklistHistory.map((item) => item.id === checklistSignoff.id ? localSignoff : item) : [localSignoff, ...checklistHistory]);
+        setEditingChecklistId(null);
+        setLastAction(hasPending ? "Checklist local cerrado con pendientes" : "Checklist local aceptado como correcto");
+      }
+    } catch (error) {
+      console.error(error);
+      const message = error?.message || "Error desconocido cerrando checklist";
+      setConnection({ status: "error", message: `No se pudo cerrar el checklist: ${message}` });
+    }
+  }
+
+  function viewChecklist(item) {
+    setViewingChecklist(item);
+    setDeleteChecklistCandidate(null);
+    setLastAction(`Visualizando cierre de checklist del ${formatDateEs(item.signoff_date)}`);
+  }
+
+  async function editChecklist(item) {
+    setViewingChecklist(null);
+    setDeleteChecklistCandidate(null);
+    setEditingChecklistId(item.id);
+    setChecklistSignoff(item);
+    setChecklistDate(item.signoff_date);
+    setChecklistResponsible(item.responsible || "");
+    setChecklistNotes(item.notes || "");
+    setLastAction(`Editando cierre de checklist del ${formatDateEs(item.signoff_date)}`);
+
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        const remoteTasks = await sb(`daily_tasks?select=*&hotel_id=eq.${hotel.id}&task_date=eq.${item.signoff_date}&order=created_at.asc`);
+        if (remoteTasks?.length) setTasks(remoteTasks.map(taskFromRow));
+      }
+    } catch (error) {
+      console.error(error);
+      setLastAction("No se pudieron cargar las tareas del checklist, pero puedes editar el cierre.");
+    }
+
+    window.setTimeout(() => {
+      document.getElementById("checklist-close-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }
+
+  function cancelEditChecklist() {
+    if (checklistSignoff) {
+      setChecklistResponsible(checklistSignoff.responsible || "");
+      setChecklistNotes(checklistSignoff.notes || "");
+    }
+    setEditingChecklistId(null);
+    setLastAction("Edición de cierre de checklist cancelada");
+  }
+
+  function askDeleteChecklist(item) {
+    setDeleteChecklistCandidate(item);
+    setViewingChecklist(null);
+  }
+
+  async function confirmDeleteChecklist() {
+    if (!deleteChecklistCandidate) return;
+    const itemToDelete = deleteChecklistCandidate;
+
+    try {
+      if (connection.status === "online" && !String(itemToDelete.id).startsWith("local-")) {
+        const deleted = await sb(`checklist_signoffs?id=eq.${itemToDelete.id}&select=*`, {
+          method: "DELETE",
+          headers: { Prefer: "return=representation" },
+        });
+
+        if (!deleted || deleted.length === 0) {
+          throw new Error("Supabase no ha eliminado ninguna fila. Revisa la política DELETE de RLS en checklist_signoffs.");
+        }
+      }
+
+      setChecklistHistory(checklistHistory.filter((item) => item.id !== itemToDelete.id));
+      if (checklistSignoff?.id === itemToDelete.id) {
+        setChecklistSignoff(null);
+        setEditingChecklistId(null);
+        setChecklistResponsible("");
+        setChecklistNotes("");
+      }
+      setDeleteChecklistCandidate(null);
+      setLastAction(`Cierre de checklist eliminado: ${formatDateEs(itemToDelete.signoff_date)}`);
+    } catch (error) {
+      console.error(error);
+      const message = error?.message || "Error desconocido eliminando el cierre de checklist";
+      setConnection({ status: "error", message: `No se pudo borrar el cierre de checklist en Supabase: ${message}` });
+      setLastAction(`Fallo al borrar cierre de checklist: ${message}`);
     }
   }
 
@@ -926,7 +1288,7 @@ export default function HotelDailyControlApp() {
     try {
       await navigator.clipboard.writeText(buildSingleReportText({ hotel, report }));
       setCopiedReportId(report.id);
-      setLastAction(`Informe copiado: ${report.date}`);
+      setLastAction(`Informe copiado: ${formatDateEs(report.date)}`);
       setTimeout(() => setCopiedReportId(null), 1800);
     } catch {
       setLastAction("No se pudo copiar el informe seleccionado");
@@ -1146,14 +1508,41 @@ export default function HotelDailyControlApp() {
 
           {active === "tasks" && (
             <div className="space-y-5 sm:space-y-6">
+              <Card id="checklist-top-card">
+                <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold sm:text-xl">Checklist operativo diario</h2>
+                    <p className="text-sm text-slate-500">Debe quedar cerrado cada día para demostrar qué tareas se realizaron y quién las validó.</p>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[720px]">
+                    <Field label="Fecha del checklist"><input className={inputStyle} type="date" value={checklistDate} onChange={(e) => loadChecklistForDate(e.target.value)} /></Field>
+                    <Field label="Responsable"><input className={inputStyle} placeholder="Nombre" value={checklistResponsible} onChange={(e) => setChecklistResponsible(e.target.value)} disabled={Boolean(checklistSignoff) && !editingChecklistId} /></Field>
+                    <Field label="Estado"><div className="flex min-h-10 items-center gap-2"><Badge tone={editingChecklistId ? "amber" : checklistSignoff ? checklistSignoff.status === "Correcto" ? "green" : "amber" : "blue"}>{editingChecklistId ? "Editando cierre" : checklistSignoff ? checklistSignoff.status : "Abierto"}</Badge></div></Field>
+                    {checklistSignoff && !editingChecklistId && (
+                      <button className={buttonLight} type="button" onClick={createNextChecklist}>
+                        <Icon name="plus" size={18} /> Crear checklist siguiente día
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </Card>
+
               <Card>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h2 className="text-lg font-bold sm:text-xl">Checklist operativo</h2>
-                    <p className="text-sm text-slate-500">Pensado para recepción abierta {hotel.receptionHours}.</p>
+                    <h3 className="font-bold">Progreso del día</h3>
+                    <p className="text-sm text-slate-500">{tasksDone}/{tasks.length} tareas completadas para el {formatDateEs(checklistDate)}.</p>
                   </div>
                   <Badge tone={taskProgress === 100 ? "green" : "amber"}>{taskProgress}% completado</Badge>
                 </div>
+                <div className="mt-4 h-3 overflow-hidden rounded-full bg-slate-100">
+                  <div className="h-full rounded-full bg-slate-900" style={{ width: `${taskProgress}%` }} />
+                </div>
+                {checklistSignoff && (
+                  <div className={cls("mt-4 rounded-2xl border p-4 text-sm", editingChecklistId ? "border-amber-200 bg-amber-50 text-amber-800" : "border-emerald-200 bg-emerald-50 text-emerald-800")}>
+                    <b><Icon name={editingChecklistId ? "edit" : "lock"} size={16} /> {editingChecklistId ? "Editando cierre." : "Checklist cerrado."}</b> {editingChecklistId ? "Puedes corregir responsable, observaciones y checks antes de actualizar el cierre." : `Validado por ${checklistSignoff.responsible || "No indicado"}. Para cambios posteriores, registra una incidencia o nota de seguimiento.`}
+                  </div>
+                )}
               </Card>
 
               {["Apertura", "Durante turno", "Cierre"].map((area) => (
@@ -1161,45 +1550,213 @@ export default function HotelDailyControlApp() {
                   <h3 className="mb-3 font-bold">{area}</h3>
                   <div className="space-y-2">
                     {tasks.filter((task) => task.area === area).map((task) => (
-                      <label key={task.id} className="flex cursor-pointer items-start gap-3 rounded-2xl bg-slate-50 p-3 text-sm">
-                        <input className="mt-1 h-5 w-5" type="checkbox" checked={task.done} onChange={(e) => updateTaskDone(task.id, e.target.checked)} />
+                      <label key={task.id} className={cls("flex items-start gap-3 rounded-2xl p-3 text-sm", checklistSignoff && !editingChecklistId ? "bg-slate-100 cursor-not-allowed" : editingChecklistId ? "bg-amber-50 cursor-pointer" : "bg-slate-50 cursor-pointer")}>
+                        <input className="mt-1 h-5 w-5" type="checkbox" checked={task.done} disabled={Boolean(checklistSignoff) && !editingChecklistId} onChange={(e) => updateTaskDone(task.id, e.target.checked)} />
                         <span className={task.done ? "text-slate-400 line-through" : "text-slate-800"}>{task.title}</span>
                       </label>
                     ))}
                   </div>
                 </Card>
               ))}
+
+              <Card id="checklist-close-card">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">{editingChecklistId ? "Editar cierre de checklist" : "Cierre y aceptación del checklist"}</h3>
+                    <p className="text-sm text-slate-500">{editingChecklistId ? "Puedes corregir responsable, observaciones y checks del cierre. Úsalo solo si el checklist se cerró con algún dato incorrecto." : "Usa este cierre para dejar constancia diaria de que recepción revisó la operativa."}</p>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <button className={buttonDark} type="button" onClick={acceptChecklist} disabled={Boolean(checklistSignoff) && !editingChecklistId}>
+                      <Icon name="check" size={18} /> {editingChecklistId ? "Actualizar cierre" : checklistSignoff ? "Checklist cerrado" : taskProgress === 100 ? "Aceptar: todo correcto" : "Cerrar con pendientes"}
+                    </button>
+                    {checklistSignoff && !editingChecklistId && (
+                      <button className={buttonLight} type="button" onClick={createNextChecklist}>
+                        <Icon name="plus" size={18} /> Nuevo checklist
+                      </button>
+                    )}
+                    {editingChecklistId && (
+                      <button className={buttonLight} type="button" onClick={cancelEditChecklist}>
+                        <Icon name="cancel" size={18} /> Cancelar edición
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <Field label="Observaciones de cierre"><textarea className={inputStyle} rows={3} value={checklistNotes} onChange={(e) => setChecklistNotes(e.target.value)} disabled={Boolean(checklistSignoff) && !editingChecklistId} placeholder="Ej.: queda pendiente confirmar late check-out de la 204, revisar cobro de Booking, limpieza avisada..." /></Field>
+                {taskProgress < 100 && !checklistSignoff && (
+                  <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+                    <b>Hay tareas pendientes.</b> Puedes cerrar el checklist, pero quedará registrado como “Cerrado con pendientes”.
+                  </div>
+                )}
+              </Card>
+
+              <Card>
+                {viewingChecklist && (
+                  <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <h4 className="text-lg font-bold">Cierre de checklist del {formatDateEs(viewingChecklist.signoff_date)}</h4>
+                        <p className="text-sm text-slate-600">Vista de solo lectura del cierre operativo.</p>
+                      </div>
+                      <button className={buttonLight} type="button" onClick={() => setViewingChecklist(null)}><Icon name="cancel" size={18} /> Cerrar vista</button>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Responsable</p><p className="font-bold">{viewingChecklist.responsible || "-"}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Estado</p><p className="font-bold">{viewingChecklist.status}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Progreso</p><p className="font-bold">{viewingChecklist.completed_count}/{viewingChecklist.total_count}</p></div>
+                      <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Creado</p><p className="font-bold">{formatDateTimeEs(viewingChecklist.created_at)}</p></div>
+                    </div>
+                    <div className="mt-4 rounded-2xl bg-white p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingChecklist.notes || "Sin observaciones."}</p></div>
+                  </div>
+                )}
+
+                {deleteChecklistCandidate && (
+                  <div className="mb-4 rounded-2xl border border-red-200 bg-red-50 p-4">
+                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h4 className="text-lg font-bold text-red-800">Confirmar borrado de cierre</h4>
+                        <p className="text-sm text-red-700">Vas a borrar el cierre de checklist del <b>{formatDateEs(deleteChecklistCandidate.signoff_date)}</b>.</p>
+                        <p className="mt-1 text-sm text-red-700">Esto reabre la posibilidad de modificar el checklist de esa fecha. Úsalo solo si el cierre se creó por error.</p>
+                      </div>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-red-700 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-red-800" type="button" onClick={confirmDeleteChecklist}><Icon name="trash" size={18} /> Sí, borrar</button>
+                        <button className={buttonLight} type="button" onClick={() => setDeleteChecklistCandidate(null)}><Icon name="cancel" size={18} /> Cancelar</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <h3 className="mb-3 font-bold">Histórico de cierres de checklist</h3>
+                <div className="overflow-x-auto rounded-2xl border border-slate-100">
+                  <table className="w-full min-w-[980px] text-left text-sm">
+                    <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Responsable</th><th>Estado</th><th>Progreso</th><th>Observaciones</th><th>Acciones</th></tr></thead>
+                    <tbody>
+                      {checklistHistory.map((item) => <tr key={item.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(item.signoff_date)}</td><td>{item.responsible || "-"}</td><td><Badge tone={item.status === "Correcto" ? "green" : "amber"}>{item.status}</Badge></td><td>{item.completed_count}/{item.total_count}</td><td className="max-w-md truncate pr-3">{item.notes || "-"}</td><td className="pr-3"><div className="flex flex-wrap gap-2"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewChecklist(item)}><Icon name="view" size={14} /> Ver</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editChecklist(item)}><Icon name="edit" size={14} /> Editar</button><button className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteChecklist(item)}><Icon name="trash" size={14} /> Borrar</button></div></td></tr>)}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
             </div>
           )}
 
           {active === "incidents" && (
             <div className="space-y-5 sm:space-y-6">
-              <Card>
-                <h2 className="text-lg font-bold sm:text-xl">Registrar incidencia</h2>
+              <Card id="incident-form-card">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold sm:text-xl">{editingIncidentId ? "Editar incidencia" : "Registrar incidencia"}</h2>
+                    <p className="text-sm text-slate-500">{editingIncidentId ? "Corrige los datos y actualiza la incidencia." : "Añade incidencias de cliente, limpieza, mantenimiento, pagos, OTAs o Cloudbeds."}</p>
+                  </div>
+                  {editingIncidentId && <Badge tone="amber">Modo edición</Badge>}
+                </div>
                 <form onSubmit={addIncident} className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
                   <Field label="Habitación"><input className={inputStyle} value={incidentForm.room} onChange={(e) => setIncidentForm({ ...incidentForm, room: e.target.value })} /></Field>
                   <Field label="Tipo"><select className={inputStyle} value={incidentForm.type} onChange={(e) => setIncidentForm({ ...incidentForm, type: e.target.value })}><option>Cliente</option><option>Mantenimiento</option><option>Limpieza</option><option>Pago</option><option>OTA</option><option>Cloudbeds</option></select></Field>
                   <Field label="Prioridad"><select className={inputStyle} value={incidentForm.priority} onChange={(e) => setIncidentForm({ ...incidentForm, priority: e.target.value })}><option>Baja</option><option>Media</option><option>Alta</option><option>Urgente</option></select></Field>
+                  <Field label="Estado"><select className={inputStyle} value={incidentForm.status} onChange={(e) => setIncidentForm({ ...incidentForm, status: e.target.value })}><option>Abierta</option><option>Seguimiento</option><option>Cerrada</option></select></Field>
                   <Field label="Responsable"><input className={inputStyle} value={incidentForm.owner} onChange={(e) => setIncidentForm({ ...incidentForm, owner: e.target.value })} /></Field>
                   <div className="sm:col-span-2 xl:col-span-5"><Field label="Descripción"><input className={inputStyle} value={incidentForm.text} onChange={(e) => setIncidentForm({ ...incidentForm, text: e.target.value })} /></Field></div>
-                  <button className={cls(buttonDark, "sm:col-span-2 xl:col-span-5")}><Icon name="plus" size={18} /> Añadir incidencia</button>
+                  <div className="flex flex-col gap-3 sm:col-span-2 sm:flex-row xl:col-span-5">
+                    <button className={cls(buttonDark, "w-full sm:w-auto")}><Icon name="save" size={18} /> {editingIncidentId ? "Actualizar incidencia" : "Añadir incidencia"}</button>
+                    {editingIncidentId && (
+                      <button className={cls(buttonLight, "w-full sm:w-auto")} type="button" onClick={cancelEditIncident}>
+                        <Icon name="cancel" size={18} /> Cancelar edición
+                      </button>
+                    )}
+                  </div>
                 </form>
               </Card>
 
+              {viewingIncident && (
+                <Card className="border-blue-200 bg-blue-50">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold">Incidencia habitación {viewingIncident.room}</h3>
+                      <p className="text-sm text-slate-600">Vista de solo lectura. Para modificar datos usa “Editar”.</p>
+                    </div>
+                    <button className={buttonLight} type="button" onClick={() => setViewingIncident(null)}>
+                      <Icon name="cancel" size={18} /> Cerrar vista
+                    </button>
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Fecha</p><p className="font-bold">{formatDateEs(viewingIncident.date)}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Tipo</p><p className="font-bold">{viewingIncident.type}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Prioridad</p><p className="font-bold">{viewingIncident.priority}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Estado</p><p className="font-bold">{viewingIncident.status}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Responsable</p><p className="font-bold">{viewingIncident.owner || "-"}</p></div>
+                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Habitación</p><p className="font-bold">{viewingIncident.room}</p></div>
+                  </div>
+                  <div className="mt-4 rounded-2xl bg-white p-4">
+                    <p className="text-sm font-bold">Descripción</p>
+                    <p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingIncident.text || "Sin descripción."}</p>
+                  </div>
+                </Card>
+              )}
+
+              {deleteIncidentCandidate && (
+                <Card className="border-red-200 bg-red-50">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-lg font-bold text-red-800">Confirmar borrado de incidencia</h3>
+                      <p className="text-sm text-red-700">Vas a borrar la incidencia de la habitación <b>{deleteIncidentCandidate.room}</b>, tipo <b>{deleteIncidentCandidate.type}</b>.</p>
+                      <p className="mt-1 text-sm text-red-700">Esta acción elimina el registro. Úsalo solo si la incidencia se creó por error.</p>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-red-700 px-4 py-3 text-sm font-bold text-white shadow-sm hover:bg-red-800" type="button" onClick={confirmDeleteIncident}>
+                        <Icon name="trash" size={18} /> Sí, borrar
+                      </button>
+                      <button className={buttonLight} type="button" onClick={() => setDeleteIncidentCandidate(null)}>
+                        <Icon name="cancel" size={18} /> Cancelar
+                      </button>
+                    </div>
+                  </div>
+                </Card>
+              )}
+
+              <Card>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Filtrar incidencias</h3>
+                    <p className="text-sm text-slate-500">Mostrando {filteredIncidents.length} de {incidents.length} incidencias.</p>
+                  </div>
+                  <button className={buttonLight} type="button" onClick={() => setIncidentFilters({ query: "", status: "Todos", type: "Todos", priority: "Todas" })}>
+                    <Icon name="cancel" size={18} /> Limpiar filtros
+                  </button>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Field label="Buscar"><input className={inputStyle} placeholder="Habitación, responsable o texto" value={incidentFilters.query} onChange={(e) => setIncidentFilters({ ...incidentFilters, query: e.target.value })} /></Field>
+                  <Field label="Estado"><select className={inputStyle} value={incidentFilters.status} onChange={(e) => setIncidentFilters({ ...incidentFilters, status: e.target.value })}><option>Todos</option><option>Abierta</option><option>Seguimiento</option><option>Cerrada</option></select></Field>
+                  <Field label="Tipo"><select className={inputStyle} value={incidentFilters.type} onChange={(e) => setIncidentFilters({ ...incidentFilters, type: e.target.value })}><option>Todos</option><option>Cliente</option><option>Mantenimiento</option><option>Limpieza</option><option>Pago</option><option>OTA</option><option>Cloudbeds</option></select></Field>
+                  <Field label="Prioridad"><select className={inputStyle} value={incidentFilters.priority} onChange={(e) => setIncidentFilters({ ...incidentFilters, priority: e.target.value })}><option>Todas</option><option>Baja</option><option>Media</option><option>Alta</option><option>Urgente</option></select></Field>
+                </div>
+              </Card>
+
               <div className="grid gap-3">
-                {incidents.map((i) => (
+                {filteredIncidents.map((i) => (
                   <Card key={i.id} className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="min-w-0">
                       <div className="mb-2 flex flex-wrap items-center gap-2">
                         <Badge tone={i.priority === "Alta" || i.priority === "Urgente" ? "red" : i.priority === "Media" ? "amber" : "slate"}>{i.priority}</Badge>
                         <Badge tone="blue">{i.type}</Badge>
-                        <span className="text-sm text-slate-500">Hab. {i.room} · {i.date} · {i.owner}</span>
+                        <span className="text-sm text-slate-500">Hab. {i.room} · {formatDateEs(i.date)} · {i.owner}</span>
                       </div>
                       <p className="text-sm font-medium sm:text-base">{i.text}</p>
                     </div>
-                    <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm" value={i.status} onChange={(e) => updateIncidentStatus(i.id, e.target.value)}>
-                      <option>Abierta</option><option>Seguimiento</option><option>Cerrada</option>
-                    </select>
+                    <div className="flex flex-col gap-2 sm:items-end">
+                      <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm" value={i.status} onChange={(e) => updateIncidentStatus(i.id, e.target.value)}>
+                        <option>Abierta</option><option>Seguimiento</option><option>Cerrada</option>
+                      </select>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <button className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewIncident(i)}>
+                          <Icon name="view" size={14} /> Ver
+                        </button>
+                        <button className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editIncident(i)}>
+                          <Icon name="edit" size={14} /> Editar
+                        </button>
+                        <button className="inline-flex items-center justify-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteIncident(i)}>
+                          <Icon name="trash" size={14} /> Borrar
+                        </button>
+                      </div>
+                    </div>
                   </Card>
                 ))}
               </div>
@@ -1249,7 +1806,7 @@ export default function HotelDailyControlApp() {
                 <Card className="border-blue-200 bg-blue-50">
                   <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
-                      <h3 className="text-lg font-bold">Parte diario del {viewingReport.date}</h3>
+                      <h3 className="text-lg font-bold">Parte diario del {formatDateEs(viewingReport.date)}</h3>
                       <p className="text-sm text-slate-600">Vista de solo lectura. Para modificar datos usa “Editar”.</p>
                       <button className={cls(buttonDark, "mt-3")} type="button" onClick={() => copySingleReport(viewingReport)}>
                         <Icon name="copy" size={18} /> {copiedReportId === viewingReport.id ? "Copiado" : "Copiar este informe"}
@@ -1284,7 +1841,7 @@ export default function HotelDailyControlApp() {
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h3 className="text-lg font-bold text-red-800">Confirmar borrado</h3>
-                      <p className="text-sm text-red-700">Vas a borrar el parte del <b>{deleteCandidate.date}</b> de <b>{deleteCandidate.manager || "responsable no indicado"}</b>.</p>
+                      <p className="text-sm text-red-700">Vas a borrar el parte del <b>{formatDateEs(deleteCandidate.date)}</b> de <b>{deleteCandidate.manager || "responsable no indicado"}</b>.</p>
                       <p className="mt-1 text-sm text-red-700">Esta acción elimina el registro del histórico. Úsalo solo si el parte se creó por error.</p>
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row">
@@ -1300,12 +1857,24 @@ export default function HotelDailyControlApp() {
               )}
 
               <Card>
-                <h3 className="mb-3 font-bold">Histórico de partes</h3>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Histórico de partes</h3>
+                    <p className="text-sm text-slate-500">Mostrando {filteredReports.length} de {reports.length} partes.</p>
+                  </div>
+                  <button className={buttonLight} type="button" onClick={() => setReportFilters({ date: "", manager: "" })}>
+                    <Icon name="cancel" size={18} /> Limpiar filtros
+                  </button>
+                </div>
+                <div className="mb-4 grid gap-4 sm:grid-cols-2">
+                  <Field label="Filtrar por fecha"><input className={inputStyle} type="date" value={reportFilters.date} onChange={(e) => setReportFilters({ ...reportFilters, date: e.target.value })} /></Field>
+                  <Field label="Buscar responsable"><input className={inputStyle} placeholder="Nombre del responsable" value={reportFilters.manager} onChange={(e) => setReportFilters({ ...reportFilters, manager: e.target.value })} /></Field>
+                </div>
                 <div className="overflow-x-auto rounded-2xl border border-slate-100">
                   <table className="w-full min-w-[1040px] text-left text-sm">
                     <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Responsable</th><th>Reservas</th><th>Ingresos</th><th>Pendiente</th><th>Recomendación</th><th>Acciones</th></tr></thead>
                     <tbody>
-                      {reports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{r.date}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td><td className="pr-3"><div className="flex flex-wrap gap-2"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewReport(r)}><Icon name="view" size={14} /> Ver</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => copySingleReport(r)}><Icon name="copy" size={14} /> {copiedReportId === r.id ? "Copiado" : "Copiar"}</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editReport(r)}><Icon name="edit" size={14} /> Editar</button><button className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteReport(r)}><Icon name="trash" size={14} /> Borrar</button></div></td></tr>)}
+                      {filteredReports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(r.date)}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td><td className="pr-3"><div className="flex flex-wrap gap-2"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewReport(r)}><Icon name="view" size={14} /> Ver</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => copySingleReport(r)}><Icon name="copy" size={14} /> {copiedReportId === r.id ? "Copiado" : "Copiar"}</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editReport(r)}><Icon name="edit" size={14} /> Editar</button><button className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteReport(r)}><Icon name="trash" size={14} /> Borrar</button></div></td></tr>)}
                     </tbody>
                   </table>
                 </div>
