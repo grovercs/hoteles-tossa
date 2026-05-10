@@ -22,7 +22,7 @@ const ROLES = ["Administrador", "Dirección", "Recepción", "Limpieza", "Manteni
 const ROLE_TABS = {
   Administrador: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "setup", "help"],
   Dirección: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "help"],
-  Recepción: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "help"],
+  Recepción: ["daily", "tasks", "incidents", "rooms", "calendar", "reports", "help"],
   Limpieza: ["tasks", "rooms", "incidents", "help"],
   Mantenimiento: ["incidents", "rooms", "help"],
 };
@@ -1529,7 +1529,14 @@ export default function HotelDailyControlApp() {
   const [catalogSaveReminder, setCatalogSaveReminder] = useState(null);
   const [reservationConflictCandidate, setReservationConflictCandidate] = useState(null);
   const [showChecklistHistory, setShowChecklistHistory] = useState(false);
+  const [selectedCalendarDay, setSelectedCalendarDay] = useState(null);
   const planningDays = useResponsivePlanningDays();
+
+  useEffect(() => {
+    if (planningDays < 15 && calendarFullscreen) {
+      setCalendarFullscreen(false);
+    }
+  }, [planningDays, calendarFullscreen]);
 
   useEffect(() => {
     async function loadSupabase() {
@@ -1747,6 +1754,25 @@ export default function HotelDailyControlApp() {
     return reservations.filter((reservation, index) => reservations.some((other, otherIndex) => otherIndex !== index && reservationsBlockingOverlap(reservation, other)));
   }, [reservations]);
   const reservationForecast = useMemo(() => summarizeReservationForecast(reservations, calendarDays), [reservations, calendarDays]);
+  const mobileCalendarSummary = useMemo(() => {
+    return calendarDays.map((day) => {
+      const active = reservations.filter((reservation) => !isReservationInactive(reservation) && isReservationActiveOnDate(reservation, day));
+      const arrivals = reservations.filter((reservation) => !isReservationInactive(reservation) && reservation.checkinDate === day);
+      const departures = reservations.filter((reservation) => !isReservationInactive(reservation) && reservation.checkoutDate === day);
+      const touched = reservations.filter((reservation) => !isReservationInactive(reservation) && reservationTouchesDate(reservation, day));
+      const revenue = active.reduce((total, reservation) => total + reservationNightlyRate(reservation), 0);
+      return { day, active, arrivals, departures, touched, revenue };
+    });
+  }, [calendarDays, reservations]);
+  const selectedCalendarDaySummary = useMemo(() => mobileCalendarSummary.find((item) => item.day === selectedCalendarDay) || null, [mobileCalendarSummary, selectedCalendarDay]);
+  const selectedCalendarDayReservations = useMemo(() => {
+    if (!selectedCalendarDaySummary) return [];
+    const byId = new Map();
+    [...selectedCalendarDaySummary.arrivals, ...selectedCalendarDaySummary.departures, ...selectedCalendarDaySummary.active].forEach((reservation) => {
+      byId.set(reservation.id, reservation);
+    });
+    return Array.from(byId.values()).sort((a, b) => String(a.roomLabel || "").localeCompare(String(b.roomLabel || "")));
+  }, [selectedCalendarDaySummary]);
   const bookingCommissionPct = channels.find((channel) => normalizeChannelName(channel.name).includes("booking"))?.commission || 0;
   const forecastBookingRow = reservationForecast.byChannel.find((item) => normalizeChannelName(item.channel).includes("booking"));
   const forecastDirectRow = reservationForecast.byChannel.find((item) => getChannelBucket(item.channel) === "directBookings");
@@ -1781,6 +1807,14 @@ export default function HotelDailyControlApp() {
   const currentRole = authProfile?.role || "Recepción";
   const visibleTabs = tabs.filter(([id]) => canAccessTab(currentRole, id));
   const canManageUsers = currentRole === "Administrador";
+
+  useEffect(() => {
+    if (!visibleTabs.length) return;
+    if (!canAccessTab(currentRole, active)) {
+      setActive(visibleTabs[0][0]);
+      setMobileMenuOpen(false);
+    }
+  }, [currentRole, active, visibleTabs]);
 
   async function loginWithEmail(e) {
     e.preventDefault();
@@ -4382,7 +4416,88 @@ export default function HotelDailyControlApp() {
                 </Card>
               )}
 
-              <Card>
+              <Card className="lg:hidden">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Agenda móvil de reservas</h3>
+                    <p className="text-sm text-slate-500">Vista rápida por día para móvil y tablet. Toca un día para ver entradas, salidas y ocupadas.</p>
+                  </div>
+                  <Badge tone="blue">{calendarDays.length} días</Badge>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {mobileCalendarSummary.map((summary) => {
+                    const hasActivity = summary.arrivals.length || summary.departures.length || summary.active.length;
+                    return (
+                      <button key={`mobile-day-${summary.day}`} type="button" onClick={() => setSelectedCalendarDay(summary.day)} className={cls("rounded-3xl border p-4 text-left shadow-sm transition hover:shadow-md", selectedCalendarDay === summary.day ? "border-[#2f5f7a] bg-sky-100 ring-4 ring-sky-100" : hasActivity ? "border-sky-200 bg-sky-50" : "border-slate-200 bg-white")}> 
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-wide text-slate-500">{formatWeekdayShort(summary.day)}</p>
+                            <h4 className="text-lg font-bold text-slate-900">{formatDateEs(summary.day).slice(0, 5)}</h4>
+                          </div>
+                          <Badge tone={hasActivity ? "blue" : "slate"}>{summary.touched.length} mov.</Badge>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-center">
+                          <div className="rounded-2xl bg-white p-2"><p className="text-[11px] text-slate-500">Entradas</p><p className="font-bold text-emerald-700">{summary.arrivals.length}</p></div>
+                          <div className="rounded-2xl bg-white p-2"><p className="text-[11px] text-slate-500">Salidas</p><p className="font-bold text-amber-700">{summary.departures.length}</p></div>
+                          <div className="rounded-2xl bg-white p-2"><p className="text-[11px] text-slate-500">Ocupadas</p><p className="font-bold text-slate-700">{summary.active.length}</p></div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <Badge tone="green">{Math.round(summary.revenue * 100) / 100}{hotel.currency}</Badge>
+                          {summary.arrivals.slice(0, 2).map((reservation) => <Badge key={`arrival-chip-${summary.day}-${reservation.id}`} tone="blue">{reservation.roomLabel.split(" · ").pop()}</Badge>)}
+                          {summary.arrivals.length > 2 && <Badge tone="slate">+{summary.arrivals.length - 2}</Badge>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </Card>
+
+              <Card className="lg:hidden">
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Reservas del día seleccionado</h3>
+                    <p className="text-sm text-slate-500">En móvil solo mostramos las reservas del día elegido para evitar listas demasiado largas.</p>
+                  </div>
+                  {selectedCalendarDaySummary ? <Badge tone="blue">{formatDateEs(selectedCalendarDaySummary.day)}</Badge> : <Badge tone="slate">Sin día seleccionado</Badge>}
+                </div>
+
+                {!selectedCalendarDaySummary ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+                    Selecciona un día en la agenda superior para ver aquí solo sus entradas, salidas y habitaciones ocupadas.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-2xl bg-emerald-50 p-3"><p className="text-[11px] text-emerald-700">Entradas</p><p className="font-bold text-emerald-800">{selectedCalendarDaySummary.arrivals.length}</p></div>
+                      <div className="rounded-2xl bg-amber-50 p-3"><p className="text-[11px] text-amber-700">Salidas</p><p className="font-bold text-amber-800">{selectedCalendarDaySummary.departures.length}</p></div>
+                      <div className="rounded-2xl bg-slate-50 p-3"><p className="text-[11px] text-slate-500">Ocupadas</p><p className="font-bold text-slate-800">{selectedCalendarDaySummary.active.length}</p></div>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button className={buttonLight} type="button" onClick={() => setSelectedCalendarDay(null)}><Icon name="cancel" size={18} /> Quitar selección</button>
+                      <button className={buttonDark} type="button" onClick={() => openNewReservationModal(roomOptions[0] || "", selectedCalendarDaySummary.day)}><Icon name="plus" size={18} /> Nueva reserva este día</button>
+                    </div>
+                    {selectedCalendarDayReservations.map((reservation) => {
+                      const movement = reservation.checkinDate === selectedCalendarDaySummary.day ? "Entrada" : reservation.checkoutDate === selectedCalendarDaySummary.day ? "Salida" : "Ocupada";
+                      const movementTone = movement === "Entrada" ? "green" : movement === "Salida" ? "amber" : "blue";
+                      return (
+                        <button key={`mobile-selected-${reservation.id}`} type="button" onClick={() => openReservationModal(reservation)} className="w-full rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:border-sky-300 hover:bg-sky-50">
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <Badge tone={movementTone}>{movement}</Badge>
+                            <Badge tone={reservation.status === "Tentativa" ? "amber" : "slate"}>{reservation.status || "Confirmada"}</Badge>
+                            <Badge tone="blue">{reservation.channel || "Pendiente"}</Badge>
+                          </div>
+                          <p className="font-bold text-slate-900">{reservation.roomLabel}</p>
+                          <p className="text-sm text-slate-600">{reservation.guestName || "Reserva sin nombre"}</p>
+                          <p className="mt-1 text-xs text-slate-500">{formatDateEs(reservation.checkinDate)} → {formatDateEs(reservation.checkoutDate)} · {reservationNights(reservation)} noches · {reservationNightlyRate(reservation)}{hotel.currency}/noche</p>
+                        </button>
+                      );
+                    })}
+                    {selectedCalendarDayReservations.length === 0 && <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No hay reservas registradas para este día.</p>}
+                  </div>
+                )}
+              </Card>
+
+              <Card className="hidden lg:block">
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h3 className="font-bold">Planning visual</h3>
@@ -4390,7 +4505,7 @@ export default function HotelDailyControlApp() {
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <Badge tone="slate">{reservations.length} reservas</Badge>
-                    <button className={buttonLight} type="button" onClick={() => setCalendarFullscreen(true)}><Icon name="view" size={18} /> Pantalla completa</button>
+                    <button className={cls(buttonLight, "hidden lg:inline-flex")} type="button" onClick={() => setCalendarFullscreen(true)}><Icon name="view" size={18} /> Pantalla completa</button>
                   </div>
                 </div>
                 <div className="max-h-[560px] overflow-auto rounded-2xl border border-slate-200">
@@ -4448,7 +4563,7 @@ export default function HotelDailyControlApp() {
                 </div>
               </Card>
 
-              <Card>
+              <Card className="hidden lg:block">
                 <h3 className="mb-4 font-bold">Reservas registradas</h3>
                 <div className="grid gap-3">
                   {reservations.map((reservation) => (
@@ -4490,7 +4605,106 @@ export default function HotelDailyControlApp() {
                 <textarea className="h-96 w-full rounded-2xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs sm:text-sm" readOnly value={reportText} />
               </Card>
 
-              {reservationModal && (
+              {selectedCalendarDaySummary && (
+        <Modal
+          title={`Reservas del ${formatDateEs(selectedCalendarDaySummary.day)}`}
+          subtitle={`${formatWeekdayShort(selectedCalendarDaySummary.day)} · entradas, salidas y habitaciones ocupadas`}
+          onClose={() => setSelectedCalendarDay(null)}
+          footer={
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button className={buttonLight} type="button" onClick={() => setSelectedCalendarDay(null)}><Icon name="cancel" size={18} /> Cerrar</button>
+              <button className={buttonDark} type="button" onClick={() => { setSelectedCalendarDay(null); openNewReservationModal(roomOptions[0] || "", selectedCalendarDaySummary.day); }}><Icon name="plus" size={18} /> Nueva reserva este día</button>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-2xl bg-emerald-50 p-3 text-center"><p className="text-xs text-emerald-700">Entradas</p><p className="text-xl font-bold text-emerald-800">{selectedCalendarDaySummary.arrivals.length}</p></div>
+              <div className="rounded-2xl bg-amber-50 p-3 text-center"><p className="text-xs text-amber-700">Salidas</p><p className="text-xl font-bold text-amber-800">{selectedCalendarDaySummary.departures.length}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3 text-center"><p className="text-xs text-slate-500">Ocupadas</p><p className="text-xl font-bold text-slate-800">{selectedCalendarDaySummary.active.length}</p></div>
+            </div>
+
+            {[
+              ["Entradas", selectedCalendarDaySummary.arrivals, "green"],
+              ["Salidas", selectedCalendarDaySummary.departures, "amber"],
+              ["Ocupadas durante la noche", selectedCalendarDaySummary.active, "blue"],
+            ].map(([title, items, tone]) => (
+              <div key={`day-section-${title}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h4 className="font-bold">{title}</h4>
+                  <Badge tone={tone}>{items.length}</Badge>
+                </div>
+                <div className="space-y-2">
+                  {items.map((reservation) => (
+                    <button key={`${title}-${reservation.id}`} type="button" onClick={() => { setSelectedCalendarDay(null); openReservationModal(reservation); }} className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-sky-300 hover:bg-sky-50">
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <Badge tone={reservation.status === "Tentativa" ? "amber" : "blue"}>{reservation.status || "Confirmada"}</Badge>
+                        <Badge tone="slate">{reservation.channel || "Pendiente"}</Badge>
+                        <span className="text-sm font-bold text-slate-800">{reservation.roomLabel}</span>
+                      </div>
+                      <p className="font-semibold text-slate-900">{reservation.guestName || "Reserva sin nombre"}</p>
+                      <p className="text-sm text-slate-600">{formatDateEs(reservation.checkinDate)} → {formatDateEs(reservation.checkoutDate)} · {reservationNights(reservation)} noches · {reservationNightlyRate(reservation)}{hotel.currency}/noche</p>
+                      {(reservation.phone || reservation.email || reservation.reference) && <p className="mt-1 text-xs text-slate-500">{reservation.phone || "Sin teléfono"} · {reservation.email || "Sin email"} · Ref. {reservation.reference || "-"}</p>}
+                    </button>
+                  ))}
+                  {!items.length && <p className="rounded-2xl bg-white p-3 text-sm text-slate-500">Sin registros en este apartado.</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {selectedCalendarDaySummary && active === "calendar" && (
+        <Modal
+          title={`Reservas del ${formatDateEs(selectedCalendarDaySummary.day)}`}
+          subtitle={`${formatWeekdayShort(selectedCalendarDaySummary.day)} · entradas, salidas y habitaciones ocupadas`}
+          onClose={() => setSelectedCalendarDay(null)}
+          footer={
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button className={buttonLight} type="button" onClick={() => setSelectedCalendarDay(null)}><Icon name="cancel" size={18} /> Cerrar</button>
+              <button className={buttonDark} type="button" onClick={() => { openNewReservationModal(roomOptions[0] || "", selectedCalendarDaySummary.day); }}><Icon name="plus" size={18} /> Nueva reserva este día</button>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-2xl bg-emerald-50 p-3 text-center"><p className="text-xs text-emerald-700">Entradas</p><p className="text-xl font-bold text-emerald-800">{selectedCalendarDaySummary.arrivals.length}</p></div>
+              <div className="rounded-2xl bg-amber-50 p-3 text-center"><p className="text-xs text-amber-700">Salidas</p><p className="text-xl font-bold text-amber-800">{selectedCalendarDaySummary.departures.length}</p></div>
+              <div className="rounded-2xl bg-slate-50 p-3 text-center"><p className="text-xs text-slate-500">Ocupadas</p><p className="text-xl font-bold text-slate-800">{selectedCalendarDaySummary.active.length}</p></div>
+            </div>
+
+            {[
+              ["Entradas", selectedCalendarDaySummary.arrivals, "green"],
+              ["Salidas", selectedCalendarDaySummary.departures, "amber"],
+              ["Ocupadas durante la noche", selectedCalendarDaySummary.active, "blue"],
+            ].map(([title, items, tone]) => (
+              <div key={`calendar-day-section-${title}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <h4 className="font-bold">{title}</h4>
+                  <Badge tone={tone}>{items.length}</Badge>
+                </div>
+                <div className="space-y-2">
+                  {items.map((reservation) => (
+                    <button key={`calendar-${title}-${reservation.id}`} type="button" onClick={() => openReservationModal(reservation)} className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-sky-300 hover:bg-sky-50">
+                      <div className="mb-2 flex flex-wrap items-center gap-2">
+                        <Badge tone={reservation.status === "Tentativa" ? "amber" : "blue"}>{reservation.status || "Confirmada"}</Badge>
+                        <Badge tone="slate">{reservation.channel || "Pendiente"}</Badge>
+                        <span className="text-sm font-bold text-slate-800">{reservation.roomLabel}</span>
+                      </div>
+                      <p className="font-semibold text-slate-900">{reservation.guestName || "Reserva sin nombre"}</p>
+                      <p className="text-sm text-slate-600">{formatDateEs(reservation.checkinDate)} → {formatDateEs(reservation.checkoutDate)} · {reservationNights(reservation)} noches · {reservationNightlyRate(reservation)}{hotel.currency}/noche</p>
+                    </button>
+                  ))}
+                  {!items.length && <p className="rounded-2xl bg-white p-3 text-sm text-slate-500">Sin registros en este apartado.</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {reservationModal && (
         <Modal
           title={reservationModal.mode === "new" ? "Nueva reserva" : "Editar reserva"}
           subtitle={`${reservationModal.roomLabel || "Habitación no seleccionada"} · ${formatDateEs(reservationModal.checkinDate)} → ${formatDateEs(reservationModal.checkoutDate)}`}
@@ -4928,7 +5142,7 @@ export default function HotelDailyControlApp() {
         </div>
       </footer>
 
-      {calendarFullscreen && (
+      {calendarFullscreen && planningDays >= 15 && (
         <div className="fixed inset-0 z-50 bg-slate-950/70 p-2 sm:p-4" role="dialog" aria-modal="true">
           <div className="flex h-full flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
             <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
