@@ -120,24 +120,6 @@ const defaultChannels = [
   { name: "Expedia", bookings: 1, revenue: 800, commission: 17 },
 ];
 
-const defaultReservations = [
-  {
-    id: "demo-reservation-1",
-    roomLabel: "Edificio principal · 101",
-    guestName: "Reserva demo",
-    channel: "Booking",
-    checkinDate: todayIso(),
-    checkoutDate: addDaysIso(todayIso(), 2),
-    nightlyRate: 120,
-    totalAmount: 240,
-    reference: "BK-DEMO",
-    phone: "",
-    email: "",
-    status: "Confirmada",
-    notes: "Reserva de ejemplo para probar el planning.",
-  },
-];
-
 const defaultEmployees = [
   "Recepción",
   "Jefa de recepción",
@@ -220,95 +202,6 @@ function formatDateEs(dateValue) {
   const [year, month, day] = String(dateValue).slice(0, 10).split("-");
   if (!year || !month || !day) return dateValue;
   return `${day}/${month}/${year}`;
-}
-
-function daysBetweenIso(startDate, endDate) {
-  if (!startDate || !endDate) return 0;
-  const [startYear, startMonth, startDay] = String(startDate).split("-").map(Number);
-  const [endYear, endMonth, endDay] = String(endDate).split("-").map(Number);
-  const start = new Date(startYear, startMonth - 1, startDay);
-  const end = new Date(endYear, endMonth - 1, endDay);
-  return Math.max(Math.round((end - start) / 86400000), 0);
-}
-
-function reservationNights(reservation) {
-  return daysBetweenIso(reservation.checkinDate, reservation.checkoutDate);
-}
-
-function reservationNightlyRate(reservation) {
-  const nights = Math.max(reservationNights(reservation), 1);
-  if (reservation.nightlyRate !== undefined && reservation.nightlyRate !== null && reservation.nightlyRate !== "") return Number(reservation.nightlyRate) || 0;
-  return Math.round(((Number(reservation.totalAmount) || 0) / nights) * 100) / 100;
-}
-
-function reservationTotalAmount(reservation) {
-  const nights = Math.max(reservationNights(reservation), 1);
-  if (reservation.totalAmount !== undefined && reservation.totalAmount !== null && reservation.totalAmount !== "") return Number(reservation.totalAmount) || 0;
-  return Math.round((reservationNightlyRate(reservation) * nights) * 100) / 100;
-}
-
-function calculateTotalFromNightly(reservation) {
-  return Math.round((reservationNightlyRate(reservation) * Math.max(reservationNights(reservation), 1)) * 100) / 100;
-}
-
-function isReservationActiveOnDate(reservation, dateValue) {
-  if (!reservation || reservation.status === "Cancelada" || reservation.status === "No-show") return false;
-  return dateValue >= reservation.checkinDate && dateValue < reservation.checkoutDate;
-}
-
-function reservationTouchesDate(reservation, dateValue) {
-  return isReservationActiveOnDate(reservation, dateValue) || reservation.checkinDate === dateValue || reservation.checkoutDate === dateValue;
-}
-
-function isReservationInactive(reservation) {
-  return reservation?.status === "Cancelada" || reservation?.status === "No-show";
-}
-
-function isReservationBlocking(reservation) {
-  return !isReservationInactive(reservation) && (reservation?.status || "Confirmada") === "Confirmada";
-}
-
-function reservationsOverlap(a, b) {
-  if (!a || !b) return false;
-  if (isReservationInactive(a) || isReservationInactive(b)) return false;
-  return a.roomLabel === b.roomLabel && a.checkinDate < b.checkoutDate && b.checkinDate < a.checkoutDate;
-}
-
-function reservationsBlockingOverlap(a, b) {
-  return reservationsOverlap(a, b) && isReservationBlocking(a) && isReservationBlocking(b);
-}
-
-function getReservationForRoomDate(reservations, roomLabel, dateValue) {
-  return (reservations || []).find((reservation) => reservation.roomLabel === roomLabel && isReservationActiveOnDate(reservation, dateValue)) || null;
-}
-
-function applyReservationsToRooms(rooms, reservations, dateValue) {
-  return rooms.map((room) => {
-    const label = room.label || `${room.area || "Edificio principal"} · ${room.number}`;
-    const reservation = getReservationForRoomDate(reservations, label, dateValue);
-    if (!reservation) return room;
-    if (room.status === "Bloqueada" || room.status === "Fuera de servicio") return { ...room, reservationConflict: reservation };
-    return {
-      ...room,
-      status: "Ocupada",
-      bookingChannel: reservation.channel || room.bookingChannel || "",
-      bookingAmount: reservationNightlyRate(reservation) || room.bookingAmount || "",
-      bookingTotalAmount: reservationTotalAmount(reservation) || "",
-      bookingReference: reservation.reference || room.bookingReference || "",
-      reservationId: reservation.id,
-      reservationGuest: reservation.guestName,
-      reservationPhone: reservation.phone || "",
-      reservationEmail: reservation.email || "",
-      reservationChannel: reservation.channel || "Pendiente",
-      reservationReference: reservation.reference || "",
-      reservationNightlyRate: reservationNightlyRate(reservation),
-      reservationTotalAmount: reservationTotalAmount(reservation),
-      reservationCheckin: reservation.checkinDate,
-      reservationCheckout: reservation.checkoutDate,
-      tone: statusTone("Ocupada"),
-      detail: `Reserva ${formatDateEs(reservation.checkinDate)} → ${formatDateEs(reservation.checkoutDate)}`,
-    };
-  });
 }
 
 function formatDateTimeEs(dateValue) {
@@ -491,35 +384,10 @@ function roomStatusToRow(rooms, hotelId, statusDate = todayIso()) {
   };
 }
 
-function parseRoomNotes(notes) {
-  try {
-    const data = JSON.parse(notes || "{}");
-    return {
-      bookingChannel: data.bookingChannel || "",
-      bookingAmount: data.bookingAmount || "",
-      bookingReference: data.bookingReference || "",
-      note: data.note || "",
-    };
-  } catch {
-    return { bookingChannel: "", bookingAmount: "", bookingReference: "", note: notes || "" };
-  }
-}
-
-function buildRoomNotes(room) {
-  const data = {
-    bookingChannel: room.bookingChannel || "",
-    bookingAmount: room.bookingAmount || "",
-    bookingReference: room.bookingReference || "",
-    note: room.note || "",
-  };
-  return JSON.stringify(data);
-}
-
 function roomDailyStatusFromRow(row) {
   const status = row.status || "Disponible";
   const label = row.room_number || "-";
   const [areaMaybe, numberMaybe] = String(label).includes(" · ") ? String(label).split(" · ") : ["Edificio principal", label];
-  const parsedNotes = parseRoomNotes(row.notes || "");
   return {
     id: row.id,
     area: areaMaybe,
@@ -527,7 +395,6 @@ function roomDailyStatusFromRow(row) {
     label,
     status,
     notes: row.notes || "",
-    ...parsedNotes,
     tone: statusTone(status),
     detail: statusDetail(status),
   };
@@ -539,7 +406,7 @@ function roomDailyStatusToRow(room, hotelId, statusDate) {
     status_date: statusDate,
     room_number: room.label || `${room.area || "Edificio principal"} · ${room.number}`,
     status: room.status || "Disponible",
-    notes: buildRoomNotes(room),
+    notes: room.notes || null,
     updated_at: new Date().toISOString(),
   };
 }
@@ -580,45 +447,6 @@ function channelToRow(channel, hotelId) {
     bookings: Number(channel.bookings) || 0,
     revenue: Number(channel.revenue) || 0,
     commission: Number(channel.commission) || 0,
-  };
-}
-
-function reservationFromRow(row) {
-  return {
-    id: row.id,
-    roomLabel: row.room_label || "",
-    guestName: row.guest_name || "",
-    channel: row.channel || "Pendiente",
-    checkinDate: row.checkin_date,
-    checkoutDate: row.checkout_date,
-    nightlyRate: Number(row.nightly_rate || 0),
-    totalAmount: Number(row.total_amount || 0),
-    reference: row.reference || "",
-    phone: row.phone || "",
-    email: row.email || "",
-    status: row.status || "Confirmada",
-    notes: row.notes || "",
-    createdAt: row.created_at,
-  };
-}
-
-function reservationToRow(reservation, hotelId) {
-  const nights = Math.max(reservationNights(reservation), 1);
-  const nightlyRate = Number(reservation.nightlyRate) || reservationNightlyRate(reservation);
-  return {
-    hotel_id: hotelId,
-    room_label: reservation.roomLabel,
-    guest_name: reservation.guestName || "Reserva sin nombre",
-    channel: reservation.channel || "Pendiente",
-    checkin_date: reservation.checkinDate,
-    checkout_date: reservation.checkoutDate,
-    nightly_rate: nightlyRate,
-    total_amount: Math.round((nightlyRate * nights) * 100) / 100,
-    reference: reservation.reference || "",
-    phone: reservation.phone || "",
-    email: reservation.email || "",
-    status: reservation.status || "Confirmada",
-    notes: reservation.notes || "",
   };
 }
 
@@ -702,67 +530,7 @@ function summarizeAreaRooms(areaRooms) {
     blocked: areaRooms.filter((room) => room.status === "Bloqueada" || room.status === "Fuera de servicio").length,
     dirty: areaRooms.filter((room) => room.status === "Sucia").length,
     pending: areaRooms.filter((room) => room.status === "Pendiente").length,
-    channelPending: areaRooms.filter((room) => room.status === "Ocupada" && !room.bookingChannel).length,
   };
-}
-
-function summarizeRoomBookings(rooms) {
-  const occupied = rooms.filter((room) => room.status === "Ocupada");
-  const pendingChannel = occupied.filter((room) => !room.bookingChannel);
-  const byChannel = occupied.reduce((groups, room) => {
-    const channel = room.bookingChannel || "Pendiente";
-    if (!groups[channel]) groups[channel] = { channel, bookings: 0, revenue: 0, rooms: [] };
-    groups[channel].bookings += 1;
-    groups[channel].revenue += Number(room.bookingAmount) || 0;
-    groups[channel].rooms.push(room);
-    return groups;
-  }, {});
-
-  return {
-    occupiedCount: occupied.length,
-    pendingChannelCount: pendingChannel.length,
-    totalRevenue: occupied.reduce((total, room) => total + (Number(room.bookingAmount) || 0), 0),
-    byChannel: Object.values(byChannel),
-  };
-}
-
-function summarizeReservationForecast(reservations, days) {
-  const byChannel = {};
-  let total = 0;
-  let roomNights = 0;
-
-  (reservations || []).forEach((reservation) => {
-    if (!reservation || reservation.status === "Cancelada" || reservation.status === "No-show") return;
-    const channel = reservation.channel || "Pendiente";
-    const nightly = reservationNightlyRate(reservation);
-    const activeDays = (days || []).filter((day) => isReservationActiveOnDate(reservation, day));
-    if (!activeDays.length) return;
-
-    if (!byChannel[channel]) byChannel[channel] = { channel, revenue: 0, roomNights: 0, reservations: [] };
-    byChannel[channel].revenue += nightly * activeDays.length;
-    byChannel[channel].roomNights += activeDays.length;
-    byChannel[channel].reservations.push(reservation);
-    total += nightly * activeDays.length;
-    roomNights += activeDays.length;
-  });
-
-  return {
-    total: Math.round(total * 100) / 100,
-    roomNights,
-    byChannel: Object.values(byChannel).map((item) => ({ ...item, revenue: Math.round(item.revenue * 100) / 100 })),
-  };
-}
-
-function normalizeChannelName(value) {
-  return String(value || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-}
-
-function getChannelBucket(channel) {
-  const normalized = normalizeChannelName(channel);
-  if (normalized.includes("web") || normalized.includes("direct")) return "directBookings";
-  if (normalized.includes("booking")) return "bookingBookings";
-  if (normalized.includes("expedia")) return "expediaBookings";
-  return "other";
 }
 
 function getIncidentArea(roomLabel) {
@@ -778,10 +546,6 @@ function alignRoomDetailsToCatalog(catalog, currentDetails = []) {
       ...room,
       status,
       notes: existing?.notes || "",
-      bookingChannel: existing?.bookingChannel || "",
-      bookingAmount: existing?.bookingAmount || "",
-      bookingReference: existing?.bookingReference || "",
-      note: existing?.note || "",
       tone: statusTone(status),
       detail: statusDetail(status),
     };
@@ -803,16 +567,6 @@ function statusDetail(status) {
   if (status === "Sucia") return "Limpieza pendiente";
   if (status === "Pendiente") return "Revisión necesaria";
   return "Sin detalle";
-}
-
-function roomChipClass(room) {
-  return cls(
-    "rounded-xl border px-2 py-2 text-xs font-bold transition hover:scale-[1.02] hover:shadow-sm focus:outline-none focus:ring-4 focus:ring-sky-100",
-    room.status === "Disponible" ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-      : room.status === "Ocupada" ? "border-slate-300 bg-slate-100 text-slate-800"
-      : room.status === "Bloqueada" || room.status === "Fuera de servicio" ? "border-red-200 bg-red-50 text-red-800"
-      : "border-amber-200 bg-amber-50 text-amber-800"
-  );
 }
 
 function buildRoomInventory(rooms, catalog = defaultRoomCatalog) {
@@ -1225,8 +979,6 @@ function Modal({ title, subtitle, children, onClose, footer }) {
 const inputStyle = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition placeholder:text-slate-400 hover:border-slate-400 focus:border-sky-700 focus:ring-4 focus:ring-sky-100";
 const buttonDark = "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#2f5f7a] px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-[#254b62] active:scale-[0.99] sm:px-5";
 const buttonLight = "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 active:scale-[0.99] sm:px-5";
-const buttonTiny = "inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-none text-slate-700 transition hover:border-slate-400 hover:bg-slate-50";
-const buttonTinyDanger = "inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] font-bold leading-none text-red-700 transition hover:bg-red-100";
 
 export default function HotelDailyControlApp() {
   const stored = typeof window !== "undefined" ? readLocal() : null;
@@ -1248,7 +1000,6 @@ export default function HotelDailyControlApp() {
   const [checklistTemplate, setChecklistTemplate] = useState(stored?.checklistTemplate || defaultTasks);
   const [tasks, setTasks] = useState(stored?.tasks || emptyDefaultTasks(stored?.checklistTemplate || defaultTasks));
   const [channels, setChannels] = useState(stored?.channels || defaultChannels);
-  const [reservations, setReservations] = useState(stored?.reservations || defaultReservations);
   const [copied, setCopied] = useState(false);
   const [copiedReportId, setCopiedReportId] = useState(null);
   const [lastAction, setLastAction] = useState("");
@@ -1296,17 +1047,6 @@ export default function HotelDailyControlApp() {
   const [deleteChecklistCandidate, setDeleteChecklistCandidate] = useState(null);
   const [checklistAreaModal, setChecklistAreaModal] = useState(null);
   const [incidentArea, setIncidentArea] = useState("");
-  const [quickRoomArea, setQuickRoomArea] = useState("");
-  const [quickRoomId, setQuickRoomId] = useState("");
-  const [quickRoomStatus, setQuickRoomStatus] = useState("Disponible");
-  const [roomStatusModal, setRoomStatusModal] = useState(null);
-  const [hasUnsavedRoomChanges, setHasUnsavedRoomChanges] = useState(false);
-  const [calendarStartDate, setCalendarStartDate] = useState(todayIso());
-  const [reservationForm, setReservationForm] = useState({ roomLabel: "", guestName: "", channel: "", checkinDate: todayIso(), checkoutDate: addDaysIso(todayIso(), 1), nightlyRate: 0, totalAmount: 0, reference: "", phone: "", email: "", status: "Confirmada", notes: "" });
-  const [reservationModal, setReservationModal] = useState(null);
-  const [calendarFullscreen, setCalendarFullscreen] = useState(false);
-  const [resetRoomsCandidate, setResetRoomsCandidate] = useState(false);
-  const [reservationConflictCandidate, setReservationConflictCandidate] = useState(null);
 
   useEffect(() => {
     async function loadSupabase() {
@@ -1317,14 +1057,13 @@ export default function HotelDailyControlApp() {
         setHotel(normalizedHotel);
         setForm((old) => ({ ...old, shift: normalizedHotel.receptionHours || old.shift }));
 
-        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteSignoffs, remoteChannels, remoteReservations] = await Promise.all([
+        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteSignoffs, remoteChannels] = await Promise.all([
           sb(`daily_reports?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=50`),
           sb(`incidents?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=100`),
           sb(`room_status?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=1`),
           sb(`daily_tasks?select=*&hotel_id=eq.${normalizedHotel.id}&task_date=eq.${todayIso()}&order=created_at.asc`),
           sb(`checklist_signoffs?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=30`),
           sb(`sales_channels?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.asc`),
-          sb(`reservations?select=*&hotel_id=eq.${normalizedHotel.id}&order=checkin_date.asc,created_at.asc&limit=300`),
         ]);
 
         setReports(remoteReports?.length ? remoteReports.map(reportFromRow) : []);
@@ -1358,12 +1097,6 @@ export default function HotelDailyControlApp() {
           const insertedChannels = await sb("sales_channels?select=*", { method: "POST", body: JSON.stringify(defaultChannels.map((channel) => channelToRow(channel, normalizedHotel.id))) });
           setChannels(insertedChannels?.length ? insertedChannels.map(channelFromRow) : defaultChannels);
         }
-
-        if (remoteReservations?.length) {
-          setReservations(remoteReservations.map(reservationFromRow));
-        } else {
-          setReservations([]);
-        }
         setConnection({ status: "online", message: "Conectado a Supabase" });
       } catch (error) {
         console.error(error);
@@ -1375,32 +1108,25 @@ export default function HotelDailyControlApp() {
   }, []);
 
   useEffect(() => {
-    writeLocal({ hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, channels, reservations });
-  }, [hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, channels, reservations]);
+    writeLocal({ hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, channels });
+  }, [hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, channels]);
 
   const latest = reports[0] || defaultReports[0];
+  const occupancy = calculateOccupancy(rooms);
+  const available = calculateAvailable(rooms);
   const roomInventory = useMemo(() => {
     const aligned = alignRoomDetailsToCatalog(roomCatalog, roomDetails);
-    const withBaseState = aligned.map((room) => ({ ...room, tone: statusTone(room.status), detail: statusDetail(room.status) }));
-    return applyReservationsToRooms(withBaseState, reservations, roomDate);
-  }, [roomCatalog, roomDetails, reservations, roomDate]);
-  const liveRooms = useMemo(() => summarizeRoomDetails(roomInventory), [roomInventory]);
-  const occupancy = calculateOccupancy(liveRooms);
-  const available = calculateAvailable(liveRooms);
+    return aligned.map((room) => ({ ...room, tone: statusTone(room.status), detail: statusDetail(room.status) }));
+  }, [roomCatalog, roomDetails]);
   const availableRooms = useMemo(() => roomInventory.filter((room) => room.status === "Disponible"), [roomInventory]);
-  const blockedRooms = useMemo(() => roomInventory.filter((room) => room.status === "Bloqueada" || room.status === "Fuera de servicio"), [roomInventory]);
-  const liveBookingSummary = useMemo(() => summarizeRoomBookings(roomInventory), [roomInventory]);
-  const liveDirectBookings = liveBookingSummary.byChannel.filter((item) => getChannelBucket(item.channel) === "directBookings").reduce((total, item) => total + item.bookings, 0);
-  const liveBookingBookings = liveBookingSummary.byChannel.filter((item) => getChannelBucket(item.channel) === "bookingBookings").reduce((total, item) => total + item.bookings, 0);
-  const liveExpediaBookings = liveBookingSummary.byChannel.filter((item) => getChannelBucket(item.channel) === "expediaBookings").reduce((total, item) => total + item.bookings, 0);
-  const liveKnownBookings = liveDirectBookings + liveBookingBookings + liveExpediaBookings;
-  const bookingShare = liveBookingSummary.occupiedCount ? Math.round((liveBookingBookings / Math.max(liveBookingSummary.occupiedCount, 1)) * 100) : latest ? Math.round((Number(latest.bookingBookings) / Math.max(Number(latest.newBookings), 1)) * 100) : 0;
-  const directShare = liveBookingSummary.occupiedCount ? Math.round((liveDirectBookings / Math.max(liveBookingSummary.occupiedCount, 1)) * 100) : latest ? Math.round((Number(latest.directBookings) / Math.max(Number(latest.newBookings), 1)) * 100) : 0;
+  const blockedRooms = useMemo(() => roomInventory.filter((room) => room.status === "Bloqueada"), [roomInventory]);
+  const bookingShare = latest ? Math.round((Number(latest.bookingBookings) / Math.max(Number(latest.newBookings), 1)) * 100) : 0;
+  const directShare = latest ? Math.round((Number(latest.directBookings) / Math.max(Number(latest.newBookings), 1)) * 100) : 0;
   const openIncidents = incidents.filter((i) => i.status !== "Cerrada").length;
   const tasksDone = tasks.filter((task) => task.done).length;
   const taskProgress = Math.round((tasksDone / Math.max(tasks.length, 1)) * 100);
 
-  const recommendations = useMemo(() => createRecommendations({ occupancy, bookingShare, directShare, blockedRooms: Number(liveRooms.blocked) || 0, pendingPayments: Number(latest?.pendingPayments) || 0, hotel }), [occupancy, bookingShare, directShare, liveRooms.blocked, latest, hotel]);
+  const recommendations = useMemo(() => createRecommendations({ occupancy, bookingShare, directShare, blockedRooms: Number(rooms.blocked) || 0, pendingPayments: Number(latest?.pendingPayments) || 0, hotel }), [occupancy, bookingShare, directShare, rooms.blocked, latest, hotel]);
   const selfTests = useMemo(() => runSelfTests(), []);
   const allTestsPass = selfTests.every((test) => test.pass);
 
@@ -1440,8 +1166,6 @@ export default function HotelDailyControlApp() {
 
   const roomOptions = useMemo(() => roomInventory.map((room) => room.label || `${room.area} · ${room.number}`), [roomInventory]);
   const groupedRooms = useMemo(() => groupRoomsByArea(roomInventory), [roomInventory]);
-  const quickRoomAreaOptions = useMemo(() => Object.keys(groupedRooms), [groupedRooms]);
-  const quickRoomAreaRooms = useMemo(() => quickRoomArea ? groupedRooms[quickRoomArea] || [] : [], [groupedRooms, quickRoomArea]);
   const groupedAvailableRooms = useMemo(() => groupRoomsByArea(availableRooms), [availableRooms]);
   const groupedBlockedRooms = useMemo(() => groupRoomsByArea(blockedRooms), [blockedRooms]);
   const groupedIncidents = useMemo(() => {
@@ -1475,48 +1199,7 @@ export default function HotelDailyControlApp() {
   const roomAreaSummaries = useMemo(() => {
     return Object.entries(groupedRooms).map(([area, areaRooms]) => ({ area, ...summarizeAreaRooms(areaRooms) }));
   }, [groupedRooms]);
-  const roomBookingSummary = liveBookingSummary;
-  const dashboardChannelRows = useMemo(() => {
-    if (liveBookingSummary.byChannel.length) {
-      return liveBookingSummary.byChannel.map((item) => ({
-        name: item.channel,
-        bookings: item.bookings,
-        revenue: item.revenue,
-        commission: channels.find((channel) => normalizeChannelName(channel.name) === normalizeChannelName(item.channel))?.commission || 0,
-      }));
-    }
-    return channels;
-  }, [liveBookingSummary, channels]);
-  const dashboardRevenue = liveBookingSummary.occupiedCount ? liveBookingSummary.totalRevenue : Number(latest?.revenue || 0);
-  const dashboardNewBookings = liveBookingSummary.occupiedCount ? liveBookingSummary.occupiedCount : Number(latest?.newBookings || 0);
   const reportText = useMemo(() => buildReportText({ hotel, latest, rooms, occupancy, available, openIncidents, recommendations, roomAreaSummaries }), [hotel, latest, rooms, occupancy, available, openIncidents, recommendations, roomAreaSummaries]);
-  const calendarDays = useMemo(() => Array.from({ length: 10 }, (_, index) => addDaysIso(calendarStartDate, index)), [calendarStartDate]);
-  const reservationConflicts = useMemo(() => {
-    return reservations.filter((reservation, index) => reservations.some((other, otherIndex) => otherIndex !== index && reservationsOverlap(reservation, other)));
-  }, [reservations]);
-  const blockingReservationConflicts = useMemo(() => {
-    return reservations.filter((reservation, index) => reservations.some((other, otherIndex) => otherIndex !== index && reservationsBlockingOverlap(reservation, other)));
-  }, [reservations]);
-  const reservationForecast = useMemo(() => summarizeReservationForecast(reservations, calendarDays), [reservations, calendarDays]);
-  const bookingCommissionPct = channels.find((channel) => normalizeChannelName(channel.name).includes("booking"))?.commission || 0;
-  const forecastBookingRow = reservationForecast.byChannel.find((item) => normalizeChannelName(item.channel).includes("booking"));
-  const forecastDirectRow = reservationForecast.byChannel.find((item) => getChannelBucket(item.channel) === "directBookings");
-  const forecastBookingRevenue = Number(forecastBookingRow?.revenue || 0);
-  const forecastDirectRevenue = Number(forecastDirectRow?.revenue || 0);
-  const forecastBookingShare = reservationForecast.total ? Math.round((forecastBookingRevenue / Math.max(reservationForecast.total, 1)) * 100) : 0;
-  const forecastDirectShare = reservationForecast.total ? Math.round((forecastDirectRevenue / Math.max(reservationForecast.total, 1)) * 100) : 0;
-  const forecastOccupancy = liveRooms.total ? Math.round((reservationForecast.roomNights / Math.max(liveRooms.total * calendarDays.length, 1)) * 100) : 0;
-  const bookingCommissionCost = Math.round((forecastBookingRevenue * bookingCommissionPct / 100) * 100) / 100;
-  const bookingNetRevenue = Math.round((forecastBookingRevenue - bookingCommissionCost) * 100) / 100;
-  const shouldLimitBooking = forecastOccupancy >= Number(hotel.highOccupancyLimit) && forecastBookingShare >= Number(hotel.bookingRiskLimit);
-  const shouldKeepBookingOpen = forecastOccupancy <= Number(hotel.lowOccupancyLimit);
-  const bookingDecision = shouldLimitBooking
-    ? { tone: "red", title: "Limitar cupo Booking", text: "Alta ocupación prevista y dependencia elevada de Booking. Conviene proteger cupo para web directa, teléfono o ventas sin comisión." }
-    : shouldKeepBookingOpen
-      ? { tone: "amber", title: "Mantener Booking abierto", text: "La ocupación prevista todavía es baja. Booking puede ayudar a llenar habitaciones, aunque conviene vigilar la comisión." }
-      : forecastBookingShare >= Number(hotel.bookingRiskLimit)
-        ? { tone: "amber", title: "Vigilar dependencia Booking", text: "Booking pesa mucho en el forecast. No cierres todo todavía, pero revisa cupos, precios y ventajas de venta directa." }
-        : { tone: "green", title: "Equilibrio aceptable", text: "La dependencia de Booking está dentro de los límites configurados. Mantén seguimiento diario." };
 
   const tabs = [
     ["dashboard", "Dirección", "chart"],
@@ -1524,7 +1207,6 @@ export default function HotelDailyControlApp() {
     ["tasks", "Checklist", "check"],
     ["incidents", "Incidencias", "alert"],
     ["rooms", "Habitaciones", "bed"],
-    ["calendar", "Calendario", "calendar"],
     ["reports", "Informes", "file"],
     ["setup", "Config.", "settings"],
   ];
@@ -1840,9 +1522,7 @@ export default function HotelDailyControlApp() {
       setLastAction(`No se pudo borrar la incidencia en Supabase: ${message}`);
       setConnection({ status: "error", message: `No se pudo borrar la incidencia en Supabase: ${message}` });
     }
-  }
-
-  async function updateIncidentStatus(id, status) {
+  }(id, status) {
     setIncidents(incidents.map((x) => (x.id === id ? { ...x, status } : x)));
     try {
       if (connection.status === "online" && !String(id).startsWith("local-") && !String(id).startsWith("demo-")) {
@@ -2131,10 +1811,8 @@ export default function HotelDailyControlApp() {
           });
         }));
 
-        setHasUnsavedRoomChanges(false);
         setLastAction(`Estado de habitaciones guardado para ${formatDateEs(roomDate)}`);
       } else {
-        setHasUnsavedRoomChanges(false);
         setLastAction(`Estado de habitaciones guardado en modo local para ${formatDateEs(roomDate)}`);
       }
     } catch (error) {
@@ -2230,302 +1908,6 @@ export default function HotelDailyControlApp() {
     openRoomDate(addDaysIso(roomDate, 1));
   }
 
-  function resetRoomDayFromReservations() {
-    setResetRoomsCandidate(false);
-    const cleanDetails = roomCatalog.map((room) => ({
-      ...room,
-      status: "Disponible",
-      notes: "",
-      bookingChannel: "",
-      bookingAmount: "",
-      bookingReference: "",
-      note: "",
-      tone: statusTone("Disponible"),
-      detail: statusDetail("Disponible"),
-    }));
-
-    setRoomDetails(cleanDetails);
-    setRoomDetailsByDate((current) => ({ ...current, [roomDate]: cleanDetails }));
-    setRooms(summarizeRoomDetails(applyReservationsToRooms(cleanDetails, reservations, roomDate)));
-    setHasUnsavedRoomChanges(true);
-    setLastAction(`Foto diaria limpiada para ${formatDateEs(roomDate)}. Las reservas activas del planning volverán a marcar ocupadas automáticamente. Pulsa Guardar estado.`);
-  }
-
-  function updateRoomStatus(room, status, bookingData = {}) {
-    const next = roomInventory.map((item) => {
-      const sameRoom = item.id === room.id || item.label === room.label;
-      if (!sameRoom) return item;
-      const nextRoom = {
-        ...item,
-        ...bookingData,
-        status,
-        tone: statusTone(status),
-        detail: statusDetail(status),
-      };
-      if (status !== "Ocupada") {
-        nextRoom.bookingChannel = "";
-        nextRoom.bookingAmount = "";
-        nextRoom.bookingReference = "";
-      }
-      return nextRoom;
-    });
-    setRoomDetails(next);
-    setRoomDetailsByDate((current) => ({ ...current, [roomDate]: next }));
-    setRooms(summarizeRoomDetails(next));
-    const pendingText = status === "Ocupada" && !bookingData.bookingChannel && !room.bookingChannel ? " · canal pendiente" : "";
-    setHasUnsavedRoomChanges(true);
-    setLastAction(`Estado actualizado: ${room.label || `${room.area} · ${room.number}`} → ${status}${pendingText}`);
-  }
-
-  function applyQuickRoomStatus() {
-    const room = quickRoomAreaRooms.find((item) => item.id === quickRoomId);
-    if (!room) {
-      setLastAction("Selecciona edificio y habitación antes de aplicar el cambio rápido.");
-      return;
-    }
-    updateRoomStatus(room, quickRoomStatus);
-  }
-
-  function openRoomStatusModal(room) {
-    setRoomStatusModal({ ...room, status: room.status || "Disponible" });
-  }
-
-  function saveRoomStatusModal() {
-    if (!roomStatusModal) return;
-    updateRoomStatus(roomStatusModal, roomStatusModal.status, {
-      bookingChannel: roomStatusModal.bookingChannel || "",
-      bookingAmount: roomStatusModal.bookingAmount || "",
-      bookingReference: roomStatusModal.bookingReference || "",
-      note: roomStatusModal.note || "",
-    });
-    setRoomStatusModal(null);
-  }
-
-  function applyRoomBookingSummaryToReport() {
-    const summary = summarizeRoomBookings(roomInventory);
-    const values = {
-      newBookings: summary.occupiedCount,
-      directBookings: 0,
-      bookingBookings: 0,
-      expediaBookings: 0,
-      revenue: summary.totalRevenue,
-    };
-
-    summary.byChannel.forEach((item) => {
-      const bucket = getChannelBucket(item.channel);
-      if (bucket !== "other") values[bucket] += item.bookings;
-    });
-
-    setForm((current) => ({
-      ...current,
-      newBookings: values.newBookings,
-      directBookings: values.directBookings,
-      bookingBookings: values.bookingBookings,
-      expediaBookings: values.expediaBookings,
-      revenue: values.revenue,
-    }));
-
-    setLastAction(`Producción aplicada al parte diario desde habitaciones: ${values.newBookings} ocupadas · ${values.revenue}${hotel.currency}`);
-  }
-
-  function findReservationConflict(draft, ignoreId = null) {
-    return reservations.find((reservation) => reservation.id !== ignoreId && reservationsBlockingOverlap(draft, reservation));
-  }
-
-  function getAvailableRoomsForDraft(draft, ignoreId = null) {
-    return roomOptions.filter((roomLabel) => {
-      const testDraft = { ...draft, roomLabel };
-      return !reservations.some((reservation) => reservation.id !== ignoreId && reservationsBlockingOverlap(testDraft, reservation));
-    });
-  }
-
-  function resolveReservationConflictWithRoom(roomLabel) {
-    if (!reservationConflictCandidate?.draft) return;
-    const draft = { ...reservationConflictCandidate.draft, roomLabel };
-    setReservationConflictCandidate(null);
-    setReservationModal({ ...draft, mode: draft.mode || "new" });
-    setLastAction(`Habitación cambiada a ${roomLabel}. Revisa y guarda la reserva.`);
-  }
-
-  async function addReservation(e) {
-    e.preventDefault();
-    if (!reservationForm.roomLabel || !reservationForm.checkinDate || !reservationForm.checkoutDate) {
-      setLastAction("Selecciona habitación, entrada y salida para crear la reserva.");
-      return;
-    }
-    if (reservationForm.checkoutDate <= reservationForm.checkinDate) {
-      setLastAction("La fecha de salida debe ser posterior a la fecha de entrada.");
-      return;
-    }
-
-    const draft = {
-      ...reservationForm,
-      id: `local-reservation-${Date.now()}`,
-      nightlyRate: Number(reservationForm.nightlyRate) || 0,
-      totalAmount: calculateTotalFromNightly(reservationForm),
-      guestName: reservationForm.guestName || "Reserva sin nombre",
-      channel: reservationForm.channel || "Pendiente",
-    };
-    const conflict = findReservationConflict(draft);
-    if (conflict) {
-      setReservationConflictCandidate({ draft: { ...draft, mode: "new" }, conflict, source: "form" });
-      setLastAction(`No se puede guardar: ${draft.roomLabel} ya está ocupada en esas fechas.`);
-      return;
-    }
-
-    try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        const inserted = await sb("reservations?select=*", { method: "POST", body: JSON.stringify(reservationToRow(draft, hotel.id)) });
-        const saved = inserted?.[0] ? reservationFromRow(inserted[0]) : draft;
-        setReservations([saved, ...reservations]);
-        setLastAction(conflict ? `Reserva creada en Supabase con aviso de posible overbooking en ${saved.roomLabel}.` : `Reserva creada en Supabase: ${saved.roomLabel} · ${formatDateEs(saved.checkinDate)} → ${formatDateEs(saved.checkoutDate)}`);
-      } else {
-        setReservations([draft, ...reservations]);
-        setLastAction(conflict ? `Reserva creada con aviso de posible overbooking en ${draft.roomLabel}.` : `Reserva creada: ${draft.roomLabel} · ${formatDateEs(draft.checkinDate)} → ${formatDateEs(draft.checkoutDate)}`);
-      }
-    } catch (error) {
-      console.error(error);
-      setReservations([draft, ...reservations]);
-      setConnection({ status: "error", message: "No se pudo guardar la reserva en Supabase. Guardada localmente." });
-      setLastAction("Reserva guardada localmente por error de Supabase.");
-    }
-
-    setReservationForm({ roomLabel: "", guestName: "", channel: "", checkinDate: calendarStartDate, checkoutDate: addDaysIso(calendarStartDate, 1), nightlyRate: 0, totalAmount: 0, reference: "", phone: "", email: "", status: "Confirmada", notes: "" });
-  }
-
-  async function updateReservationStatus(id, status) {
-    const reservationToUpdate = reservations.find((reservation) => reservation.id === id);
-    if (!reservationToUpdate) return;
-    const updatedReservation = { ...reservationToUpdate, status };
-
-    try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID && !String(id).startsWith("local-") && !String(id).startsWith("draft-") && !String(id).startsWith("demo-")) {
-        const updated = await sb(`reservations?id=eq.${id}&select=*`, { method: "PATCH", body: JSON.stringify({ status }) });
-        const remoteSaved = updated?.[0] ? reservationFromRow(updated[0]) : updatedReservation;
-        setReservations(reservations.map((reservation) => reservation.id === id ? remoteSaved : reservation));
-      } else {
-        setReservations(reservations.map((reservation) => reservation.id === id ? updatedReservation : reservation));
-      }
-      setLastAction(`Reserva marcada como ${status}: ${reservationToUpdate.roomLabel}.`);
-    } catch (error) {
-      console.error(error);
-      setConnection({ status: "error", message: "No se pudo cambiar el estado de la reserva en Supabase." });
-      setLastAction("No se pudo cambiar el estado de la reserva en Supabase.");
-    }
-  }
-
-  function convertConflictDraftToTentative() {
-    if (!reservationConflictCandidate?.draft) return;
-    const draft = { ...reservationConflictCandidate.draft, status: "Tentativa" };
-    setReservationConflictCandidate(null);
-    setReservationModal({ ...draft, mode: draft.mode || "new" });
-    setLastAction("Reserva cambiada a Tentativa. Revisa los datos y pulsa Guardar reserva.");
-  }
-
-  async function deleteReservation(id) {
-    const reservationToDelete = reservations.find((reservation) => reservation.id === id);
-    try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID && !String(id).startsWith("local-") && !String(id).startsWith("draft-") && !String(id).startsWith("demo-")) {
-        await sb(`reservations?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      }
-      setReservations(reservations.filter((reservation) => reservation.id !== id));
-      setReservationModal(null);
-      setLastAction(`Reserva eliminada: ${reservationToDelete?.roomLabel || "planning"}.`);
-    } catch (error) {
-      console.error(error);
-      setConnection({ status: "error", message: "No se pudo borrar la reserva en Supabase." });
-      setLastAction("No se pudo borrar la reserva en Supabase.");
-    }
-  }
-
-  function openReservationModal(reservation) {
-    setRoomStatusModal(null);
-    setViewingReport(null);
-    setViewingIncident(null);
-    setViewingChecklist(null);
-    setReservationModal({ ...reservation, mode: "edit" });
-  }
-
-  function openNewReservationModal(roomLabel, day) {
-    setRoomStatusModal(null);
-    setReservationModal({
-      id: `draft-reservation-${Date.now()}`,
-      mode: "new",
-      roomLabel,
-      guestName: "",
-      channel: "",
-      checkinDate: day,
-      checkoutDate: addDaysIso(day, 1),
-      nightlyRate: 0,
-      totalAmount: 0,
-      reference: "",
-      phone: "",
-      email: "",
-      status: "Confirmada",
-      notes: "",
-    });
-  }
-
-  async function saveReservationModal() {
-    if (!reservationModal?.roomLabel || !reservationModal?.checkinDate || !reservationModal?.checkoutDate) {
-      setLastAction("Selecciona habitación, entrada y salida para guardar la reserva.");
-      return;
-    }
-    if (reservationModal.checkoutDate <= reservationModal.checkinDate) {
-      setLastAction("La fecha de salida debe ser posterior a la fecha de entrada.");
-      return;
-    }
-
-    const saved = {
-      ...reservationModal,
-      mode: undefined,
-      id: reservationModal.mode === "new" ? `local-reservation-${Date.now()}` : reservationModal.id,
-      guestName: reservationModal.guestName || "Reserva sin nombre",
-      channel: reservationModal.channel || "Pendiente",
-      nightlyRate: Number(reservationModal.nightlyRate) || reservationNightlyRate(reservationModal),
-      totalAmount: calculateTotalFromNightly(reservationModal),
-    };
-
-    const conflict = findReservationConflict(saved, reservationModal.id);
-    if (conflict) {
-      setReservationConflictCandidate({ draft: saved, conflict, source: "modal" });
-      setLastAction(`No se puede guardar: ${saved.roomLabel} ya está ocupada en esas fechas.`);
-      return;
-    }
-
-    try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        if (reservationModal.mode === "new" || String(reservationModal.id).startsWith("draft-") || String(reservationModal.id).startsWith("local-")) {
-          const inserted = await sb("reservations?select=*", { method: "POST", body: JSON.stringify(reservationToRow(saved, hotel.id)) });
-          const remoteSaved = inserted?.[0] ? reservationFromRow(inserted[0]) : saved;
-          setReservations([remoteSaved, ...reservations]);
-          setLastAction(`Reserva guardada en Supabase: ${remoteSaved.roomLabel}`);
-        } else {
-          const updated = await sb(`reservations?id=eq.${reservationModal.id}&select=*`, { method: "PATCH", body: JSON.stringify(reservationToRow(saved, hotel.id)) });
-          const remoteSaved = updated?.[0] ? reservationFromRow(updated[0]) : saved;
-          setReservations(reservations.map((reservation) => reservation.id === reservationModal.id ? remoteSaved : reservation));
-          setLastAction(`Reserva actualizada: ${remoteSaved.roomLabel}`);
-        }
-      } else {
-        setReservations(reservationModal.mode === "new" ? [saved, ...reservations] : reservations.map((reservation) => reservation.id === reservationModal.id ? saved : reservation));
-        setLastAction(`Reserva guardada: ${saved.roomLabel} · ${formatDateEs(saved.checkinDate)} → ${formatDateEs(saved.checkoutDate)}`);
-      }
-    } catch (error) {
-      console.error(error);
-      setConnection({ status: "error", message: "No se pudo guardar la reserva en Supabase. Guardada localmente." });
-      setReservations(reservationModal.mode === "new" ? [saved, ...reservations] : reservations.map((reservation) => reservation.id === reservationModal.id ? saved : reservation));
-      setLastAction("Reserva guardada localmente por error de Supabase.");
-    }
-
-    setReservationModal(null);
-  }
-
-  function loadReservationInRooms(reservation) {
-    setRoomDate(reservation.checkinDate);
-    loadRoomsForDate(reservation.checkinDate);
-    goToTab("rooms");
-  }
-
   async function saveHotelConfig() {
     try {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
@@ -2545,21 +1927,7 @@ export default function HotelDailyControlApp() {
     try {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
         const remoteChannels = channels.filter((channel) => channel.id && !String(channel.id).startsWith("local-"));
-        const localChannels = channels.filter((channel) => !channel.id || String(channel.id).startsWith("local-"));
-
         await Promise.all(remoteChannels.map((channel) => sb(`sales_channels?id=eq.${channel.id}`, { method: "PATCH", body: JSON.stringify(channelToRow(channel, hotel.id)) })));
-
-        if (localChannels.length) {
-          const inserted = await sb("sales_channels?select=*", { method: "POST", body: JSON.stringify(localChannels.map((channel) => channelToRow(channel, hotel.id))) });
-          if (inserted?.length) {
-            const insertedNames = new Set(inserted.map((row) => row.name));
-            setChannels([
-              ...channels.filter((channel) => !String(channel.id || "").startsWith("local-") || !insertedNames.has(channel.name)),
-              ...inserted.map(channelFromRow),
-            ]);
-          }
-        }
-
         setLastAction("Canales de venta guardados en Supabase");
       } else {
         setLastAction("Canales de venta guardados en modo local");
@@ -2645,20 +2013,6 @@ export default function HotelDailyControlApp() {
 
   function updateChannel(index, key, value) {
     setChannels(channels.map((channel, i) => (i === index ? { ...channel, [key]: key === "name" ? value : Number(value) } : channel)));
-  }
-
-  function addChannel() {
-    setChannels([
-      ...channels,
-      { id: `local-channel-${Date.now()}`, name: "Nuevo canal", bookings: 0, revenue: 0, commission: 0 },
-    ]);
-    setLastAction("Nuevo canal añadido. Edita el nombre y pulsa Guardar canales.");
-  }
-
-  function deleteChannel(index) {
-    const removed = channels[index];
-    setChannels(channels.filter((_, i) => i !== index));
-    setLastAction(`Canal eliminado de la configuración: ${removed?.name || "canal"}. Pulsa Guardar canales para conservar el cambio.`);
   }
 
   function updateChecklistTemplate(index, key, value) {
@@ -2794,9 +2148,9 @@ export default function HotelDailyControlApp() {
           {active === "dashboard" && (
             <div className="space-y-5 sm:space-y-6">
               <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-                <Stat icon="bed" label="Ocupación" value={`${occupancy}%`} hint={`${liveRooms.occupied}/${liveRooms.total} ocupadas · ${formatDateEs(roomDate)}`} />
-                <Stat icon="calendar" label="Disponibles" value={available} hint={`${liveRooms.blocked} bloqueadas/FDS`} />
-                <Stat icon="euro" label="Ingresos día" value={`${dashboardRevenue}${hotel.currency}`} hint={liveBookingSummary.occupiedCount ? "Calculado desde reservas activas" : `${latest.pendingPayments}${hotel.currency} pendientes`} />
+                <Stat icon="bed" label="Ocupación" value={`${occupancy}%`} hint={`${rooms.occupied}/${rooms.total} ocupadas`} />
+                <Stat icon="calendar" label="Disponibles" value={available} hint={`${rooms.blocked} bloqueadas`} />
+                <Stat icon="euro" label="Ingresos" value={`${latest.revenue}${hotel.currency}`} hint={`${latest.pendingPayments}${hotel.currency} pendientes`} />
                 <Stat icon="alert" label="Incidencias" value={openIncidents} hint="Abiertas" />
               </div>
 
@@ -2826,22 +2180,16 @@ export default function HotelDailyControlApp() {
 
                 <Card>
                   <h2 className="text-lg font-bold sm:text-xl">Producción por canal</h2>
-                  <p className="mb-4 text-sm text-slate-500">Control para reducir comisiones y proteger venta directa. Calculado desde la ocupación activa del día.</p>
-                  <div className="mb-4 flex flex-wrap gap-2">
-                    <Badge tone="blue">{dashboardNewBookings} ocupadas</Badge>
-                    <Badge tone={directShare >= Number(hotel.directBookingGoal) ? "green" : "amber"}>Web directa {directShare}%</Badge>
-                    <Badge tone={bookingShare > Number(hotel.bookingRiskLimit) ? "red" : "slate"}>Booking {bookingShare}%</Badge>
-                    {liveBookingSummary.pendingChannelCount > 0 && <Badge tone="amber">{liveBookingSummary.pendingChannelCount} canal pendiente</Badge>}
-                  </div>
+                  <p className="mb-4 text-sm text-slate-500">Control para reducir comisiones y proteger venta directa.</p>
                   <div className="space-y-4">
-                    {dashboardChannelRows.map((c) => {
-                      const totalRevenue = dashboardChannelRows.reduce((a, b) => a + Number(b.revenue || 0), 0) || 1;
+                    {channels.map((c) => {
+                      const totalRevenue = channels.reduce((a, b) => a + Number(b.revenue || 0), 0) || 1;
                       const pct = Math.round((Number(c.revenue || 0) / totalRevenue) * 100);
                       return (
                         <div key={c.name}>
                           <div className="mb-1 flex items-center justify-between gap-3 text-sm">
                             <span className="font-semibold">{c.name}</span>
-                            <span className="whitespace-nowrap text-slate-500">{c.bookings || 0} hab. · {c.revenue}{hotel.currency} · {c.commission}%</span>
+                            <span className="whitespace-nowrap text-slate-500">{c.revenue}{hotel.currency} · {c.commission}%</span>
                           </div>
                           <div className="h-3 overflow-hidden rounded-full bg-slate-100">
                             <div className="h-full rounded-full bg-[#2f5f7a]" style={{ width: `${pct}%` }} />
@@ -2852,39 +2200,6 @@ export default function HotelDailyControlApp() {
                   </div>
                 </Card>
               </div>
-
-              <Card className={shouldLimitBooking ? "border-red-200 bg-red-50" : shouldKeepBookingOpen ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}>
-                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <h2 className="text-lg font-bold sm:text-xl">Decisión de cupo Booking</h2>
-                    <p className="text-sm text-slate-500">Recomendación basada en ocupación actual, forecast de 10 días, peso de Booking y comisión estimada.</p>
-                  </div>
-                  <Badge tone={bookingDecision.tone}>{bookingDecision.title}</Badge>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                  <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Ocupación hoy</p><p className="text-xl font-bold">{occupancy}%</p></div>
-                  <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Forecast 10 días</p><p className="text-xl font-bold">{forecastOccupancy}%</p></div>
-                  <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Booking forecast</p><p className="text-xl font-bold">{forecastBookingShare}%</p></div>
-                  <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Web directa forecast</p><p className="text-xl font-bold">{forecastDirectShare}%</p></div>
-                  <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Comisión Booking</p><p className="text-xl font-bold">{bookingCommissionCost}{hotel.currency}</p></div>
-                </div>
-                <div className="mt-4 grid gap-3 lg:grid-cols-[1.2fr_.8fr]">
-                  <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
-                    <h3 className="font-bold">Recomendación</h3>
-                    <p className="mt-1 text-sm text-slate-700">{bookingDecision.text}</p>
-                    <p className="mt-3 text-xs text-slate-500">Regla: si forecast ≥ {hotel.highOccupancyLimit}% y Booking ≥ {hotel.bookingRiskLimit}%, se recomienda limitar cupo. Si forecast ≤ {hotel.lowOccupancyLimit}%, se recomienda mantener Booking abierto.</p>
-                  </div>
-                  <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
-                    <h3 className="font-bold">Impacto Booking</h3>
-                    <div className="mt-2 space-y-1 text-sm text-slate-700">
-                      <p><b>Ingresos Booking previstos:</b> {forecastBookingRevenue}{hotel.currency}</p>
-                      <p><b>Comisión:</b> {bookingCommissionPct}%</p>
-                      <p><b>Coste comisión:</b> {bookingCommissionCost}{hotel.currency}</p>
-                      <p><b>Neto estimado:</b> {bookingNetRevenue}{hotel.currency}</p>
-                    </div>
-                  </div>
-                </div>
-              </Card>
 
               <div className="grid gap-5 xl:grid-cols-2">
                 <Card>
@@ -3019,26 +2334,6 @@ export default function HotelDailyControlApp() {
                   </div>
                   <button className={buttonLight} type="button" onClick={() => { setChecklistAreaModal(null); goToTab("rooms"); }}><Icon name="bed" size={18} /> Ver habitaciones</button>
                 </div>
-                <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                  <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className="font-bold text-amber-950">Producción calculada desde habitaciones</h3>
-                      <p className="text-sm text-amber-900">Se calcula con habitaciones marcadas como ocupadas. El canal puede quedar pendiente si recepción no lo sabe todavía.</p>
-                    </div>
-                    <Badge tone={roomBookingSummary.pendingChannelCount ? "amber" : "green"}>{roomBookingSummary.pendingChannelCount} pendientes de canal</Badge>
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Ocupadas</p><p className="font-bold">{roomBookingSummary.occupiedCount}</p></div>
-                    <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Revenue calculado</p><p className="font-bold">{roomBookingSummary.totalRevenue}{hotel.currency}</p></div>
-                    {roomBookingSummary.byChannel.map((item) => (
-                      <div key={item.channel} className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">{item.channel}</p><p className="font-bold">{item.bookings} · {item.revenue}{hotel.currency}</p></div>
-                    ))}
-                  </div>
-                  <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs text-amber-900">Al aplicar, se actualizan reservas nuevas, Web directa, Booking, Expedia e ingresos del parte. Los canales no reconocidos quedan fuera de esos contadores.</p>
-                    <button className={buttonDark} type="button" onClick={applyRoomBookingSummaryToReport}><Icon name="sync" size={18} /> Aplicar al parte diario</button>
-                  </div>
-                </div>
                 <div className="grid gap-3 xl:grid-cols-2">
                   {roomAreaSummaries.map((summary) => (
                     <button key={summary.area} type="button" onClick={() => setChecklistAreaModal(summary.area)} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:border-sky-300 hover:bg-white hover:shadow-sm">
@@ -3052,7 +2347,6 @@ export default function HotelDailyControlApp() {
                         <Badge tone="red">{summary.blocked} bloqueadas/FDS</Badge>
                         <Badge tone="amber">{summary.dirty} sucias</Badge>
                         <Badge tone="amber">{summary.pending} pendientes</Badge>
-                        {summary.channelPending > 0 && <Badge tone="amber">{summary.channelPending} canales pendientes</Badge>}
                       </div>
                     </button>
                   ))}
@@ -3256,7 +2550,6 @@ export default function HotelDailyControlApp() {
                         <Badge tone="red">{summary.blocked} bloq./FDS</Badge>
                         <Badge tone="amber">{summary.dirty} sucias</Badge>
                         <Badge tone="amber">{summary.pending} pendientes</Badge>
-                        {summary.channelPending > 0 && <Badge tone="amber">{summary.channelPending} canales pendientes</Badge>}
                       </div>
                     </button>
                   ))}
@@ -3354,7 +2647,7 @@ export default function HotelDailyControlApp() {
                   <table className="w-full min-w-[980px] text-left text-sm">
                     <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Edificio</th><th>Responsable</th><th>Estado</th><th>Progreso</th><th>Observaciones</th><th>Acciones</th></tr></thead>
                     <tbody>
-                      {checklistHistory.map((item) => <tr key={item.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(item.signoff_date)}</td><td>{getChecklistArea(item)}</td><td>{item.responsible || "-"}</td><td><Badge tone={item.status === "Correcto" ? "green" : "amber"}>{item.status}</Badge></td><td>{item.completed_count}/{item.total_count}</td><td className="max-w-md truncate pr-3">{cleanChecklistNotes(item.notes) || "-"}</td><td className="pr-3"><div className="flex flex-nowrap gap-1"><button className={buttonTiny} type="button" onClick={() => viewChecklist(item)}><Icon name="view" size={13} /> Ver</button><button className={buttonTiny} type="button" onClick={() => editChecklist(item)}><Icon name="edit" size={13} /> Editar</button><button className={buttonTiny} type="button" onClick={() => printChecklist(item)}><Icon name="print" size={13} /> Imprimir</button><button className={buttonTinyDanger} type="button" onClick={() => askDeleteChecklist(item)}><Icon name="trash" size={13} /> Borrar</button></div></td></tr>)}
+                      {checklistHistory.map((item) => <tr key={item.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(item.signoff_date)}</td><td>{getChecklistArea(item)}</td><td>{item.responsible || "-"}</td><td><Badge tone={item.status === "Correcto" ? "green" : "amber"}>{item.status}</Badge></td><td>{item.completed_count}/{item.total_count}</td><td className="max-w-md truncate pr-3">{cleanChecklistNotes(item.notes) || "-"}</td><td className="pr-3"><div className="flex flex-wrap gap-2"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewChecklist(item)}><Icon name="view" size={14} /> Ver</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editChecklist(item)}><Icon name="edit" size={14} /> Editar</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => printChecklist(item)}><Icon name="print" size={14} /> Imprimir</button><button className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteChecklist(item)}><Icon name="trash" size={14} /> Borrar</button></div></td></tr>)}
                     </tbody>
                   </table>
                 </div>
@@ -3372,11 +2665,11 @@ export default function HotelDailyControlApp() {
                       <p className="text-sm text-slate-600"><b>Progreso:</b> {item.completed_count}/{item.total_count}</p>
                       <p className="text-sm text-slate-600"><b>Edificio:</b> {getChecklistArea(item)}</p>
                       <p className="mt-2 line-clamp-2 text-sm text-slate-600">{cleanChecklistNotes(item.notes) || "Sin observaciones."}</p>
-                      <div className="mt-3 flex flex-nowrap gap-1 overflow-x-auto pb-1">
-                        <button className={buttonTiny} type="button" onClick={() => viewChecklist(item)}>Ver</button>
-                        <button className={buttonTiny} type="button" onClick={() => editChecklist(item)}>Editar</button>
-                        <button className={buttonTiny} type="button" onClick={() => printChecklist(item)}>Imprimir</button>
-                        <button className={buttonTinyDanger} type="button" onClick={() => askDeleteChecklist(item)}>Borrar</button>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold" type="button" onClick={() => viewChecklist(item)}>Ver</button>
+                        <button className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold" type="button" onClick={() => editChecklist(item)}>Editar</button>
+                        <button className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold" type="button" onClick={() => printChecklist(item)}>Imprimir</button>
+                        <button className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" type="button" onClick={() => askDeleteChecklist(item)}>Borrar</button>
                       </div>
                     </div>
                   ))}
@@ -3508,11 +2801,19 @@ export default function HotelDailyControlApp() {
                       <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm" value={i.status} onChange={(e) => updateIncidentStatus(i.id, e.target.value)}>
                         <option>Abierta</option><option>Seguimiento</option><option>Cerrada</option>
                       </select>
-                      <div className="flex flex-nowrap justify-end gap-1 overflow-x-auto pb-1">
-                        <button className={buttonTiny} type="button" onClick={() => viewIncident(i)}><Icon name="view" size={13} /> Ver</button>
-                        <button className={buttonTiny} type="button" onClick={() => editIncident(i)}><Icon name="edit" size={13} /> Editar</button>
-                        <button className={buttonTiny} type="button" onClick={() => printIncident(i)}><Icon name="print" size={13} /> Imprimir</button>
-                        <button className={buttonTinyDanger} type="button" onClick={() => askDeleteIncident(i)}><Icon name="trash" size={13} /> Borrar</button>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <button className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewIncident(i)}>
+                          <Icon name="view" size={14} /> Ver
+                        </button>
+                        <button className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editIncident(i)}>
+                          <Icon name="edit" size={14} /> Editar
+                        </button>
+                        <button className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => printIncident(i)}>
+                          <Icon name="print" size={14} /> Imprimir
+                        </button>
+                        <button className="inline-flex items-center justify-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteIncident(i)}>
+                          <Icon name="trash" size={14} /> Borrar
+                        </button>
                       </div>
                     </div>
                   </Card>
@@ -3534,11 +2835,10 @@ export default function HotelDailyControlApp() {
                   <button className={buttonLight} type="button" onClick={() => openRoomDate(todayIso())}><Icon name="calendar" size={18} /> Hoy</button>
                   <button className={buttonLight} type="button" onClick={goNextRoomDay}><Icon name="calendar" size={18} /> Día siguiente</button>
                   <button className={buttonLight} type="button" onClick={createNextRoomDay}><Icon name="plus" size={18} /> Crear copia mañana</button>
-                  <button className={buttonLight} type="button" onClick={() => setResetRoomsCandidate(true)}><Icon name="sync" size={18} /> Recalcular desde reservas</button>
                   <button className={buttonDark} type="button" onClick={saveRooms}><Icon name="save" size={18} /> Guardar estado</button>
                 </div>
                 <div className="mb-4 rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
-                  <b>Calendario:</b> puedes escoger cualquier fecha con el selector. “Día siguiente” navega al día siguiente guardado o vacío. “Crear copia mañana” crea una nueva foto copiando el estado actual. “Recalcular desde reservas” limpia ocupaciones manuales antiguas y deja que el planning marque las habitaciones ocupadas.
+                  <b>Calendario:</b> puedes escoger cualquier fecha con el selector. “Día siguiente” navega al día siguiente guardado o vacío. “Crear copia mañana” crea una nueva foto copiando el estado actual para ajustarla y guardarla.
                 </div>
                 <div className="mb-5 flex flex-wrap gap-2">
                   <Badge tone="blue">Foto diaria: {formatDateEs(roomDate)}</Badge>
@@ -3576,104 +2876,6 @@ export default function HotelDailyControlApp() {
               <Card>
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h3 className="font-bold">Cambio rápido de habitación</h3>
-                    <p className="text-sm text-slate-500">Pensado para móvil: elige edificio, habitación y estado sin bajar por todo el mapa.</p>
-                  </div>
-                  <Badge tone="blue">{formatDateEs(roomDate)}</Badge>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_auto] xl:items-end">
-                  <Field label="Edificio / estancia">
-                    <select
-                      className={inputStyle}
-                      value={quickRoomArea}
-                      onChange={(e) => {
-                        const area = e.target.value;
-                        const roomsInArea = groupedRooms[area] || [];
-                        const firstRoom = roomsInArea[0];
-                        setQuickRoomArea(area);
-                        setQuickRoomId(firstRoom?.id || "");
-                        setQuickRoomStatus(firstRoom?.status || "Disponible");
-                      }}
-                    >
-                      <option value="">Seleccionar edificio</option>
-                      {quickRoomAreaOptions.map((area) => <option key={area} value={area}>{area}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Habitación">
-                    <select
-                      className={inputStyle}
-                      value={quickRoomId}
-                      disabled={!quickRoomArea}
-                      onChange={(e) => {
-                        const id = e.target.value;
-                        const room = quickRoomAreaRooms.find((item) => item.id === id);
-                        setQuickRoomId(id);
-                        setQuickRoomStatus(room?.status || "Disponible");
-                      }}
-                    >
-                      <option value="">Seleccionar habitación</option>
-                      {quickRoomAreaRooms.map((room) => <option key={room.id} value={room.id}>{room.number} · {room.status}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Nuevo estado">
-                    <select className={inputStyle} value={quickRoomStatus} onChange={(e) => setQuickRoomStatus(e.target.value)}>
-                      {roomStatusOptions.map((status) => <option key={status}>{status}</option>)}
-                    </select>
-                  </Field>
-                  <button className={buttonDark} type="button" onClick={applyQuickRoomStatus}><Icon name="save" size={18} /> Aplicar</button>
-                </div>
-                <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                  El cambio se aplica a la foto diaria actual. Para dejarlo guardado en Supabase, pulsa después <b>Guardar estado</b> arriba.
-                </div>
-              </Card>
-
-              <Card>
-                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h3 className="font-bold">Resumen visual por canal</h3>
-                    <p className="text-sm text-slate-500">Abre un canal para ver qué habitaciones ocupadas pertenecen a ese origen. Las pendientes indican habitaciones ocupadas sin canal asignado.</p>
-                  </div>
-                  <Badge tone={roomBookingSummary.pendingChannelCount ? "amber" : "green"}>{roomBookingSummary.pendingChannelCount} pendientes</Badge>
-                </div>
-                <div className="grid gap-3 xl:grid-cols-2">
-                  {roomBookingSummary.byChannel.length === 0 && <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No hay habitaciones ocupadas para agrupar por canal.</p>}
-                  {roomBookingSummary.byChannel.map((channel) => (
-                    <details key={channel.channel} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 open:bg-white">
-                      <summary className="cursor-pointer list-none">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <h4 className="font-bold">{channel.channel}</h4>
-                            <p className="text-sm text-slate-500">{channel.bookings} habitaciones · {channel.revenue}{hotel.currency}</p>
-                          </div>
-                          <Badge tone={channel.channel === "Pendiente" ? "amber" : "blue"}>{channel.bookings}</Badge>
-                        </div>
-                      </summary>
-                      <div className="mt-4 space-y-3">
-                        {Object.entries(groupRoomsByArea(channel.rooms)).map(([area, areaRooms]) => (
-                          <div key={`${channel.channel}-${area}`} className="rounded-2xl border border-slate-200 bg-white p-3">
-                            <div className="mb-2 flex items-center justify-between gap-2">
-                              <p className="font-semibold text-slate-800">{area}</p>
-                              <Badge tone="slate">{areaRooms.length}</Badge>
-                            </div>
-                            <div className="grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8">
-                              {areaRooms.map((room) => (
-                                <button key={`${channel.channel}-${room.id}`} type="button" onClick={() => openRoomStatusModal(room)} title={`${room.label || room.number} · ${room.status}`} className={roomChipClass(room)}>
-                                  <span className="block truncate">{room.number}</span>
-                                  <span className="mt-0.5 hidden text-[10px] font-semibold opacity-75 lg:block">{room.bookingAmount ? `${room.bookingAmount}${hotel.currency}` : room.status}</span>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  ))}
-                </div>
-              </Card>
-
-              <Card>
-                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
                     <h3 className="font-bold">Mapa operativo de habitaciones</h3>
                     <p className="text-sm text-slate-500">Vista generada para el día {formatDateEs(roomDate)} usando el catálogo fijo configurado.</p>
                   </div>
@@ -3702,32 +2904,9 @@ export default function HotelDailyControlApp() {
                           </div>
                         </div>
 
-                        <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-3">
-                          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                            <div>
-                              <h5 className="font-bold">Selección rápida de habitaciones</h5>
-                              <p className="text-xs text-slate-500">Pulsa una habitación para cambiar su estado en modal.</p>
-                            </div>
-                            <div className="flex flex-wrap gap-2 text-xs">
-                              <span className="inline-flex items-center gap-1"><span className="h-3 w-3 rounded-full bg-emerald-100 ring-1 ring-emerald-200" /> Disponible</span>
-                              <span className="inline-flex items-center gap-1"><span className="h-3 w-3 rounded-full bg-slate-100 ring-1 ring-slate-300" /> Ocupada</span>
-                              <span className="inline-flex items-center gap-1"><span className="h-3 w-3 rounded-full bg-red-100 ring-1 ring-red-200" /> Bloq./FDS</span>
-                              <span className="inline-flex items-center gap-1"><span className="h-3 w-3 rounded-full bg-amber-100 ring-1 ring-amber-200" /> Sucia/Pend.</span>
-                            </div>
-                          </div>
-                          <div className="grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-8 xl:grid-cols-10 2xl:grid-cols-12">
-                            {areaRooms.map((room) => (
-                              <button key={`${room.id}-chip`} type="button" onClick={() => openRoomStatusModal(room)} title={`${room.label || room.number} · ${room.status}`} className={roomChipClass(room)}>
-                                <span className="block truncate">{room.number}</span>
-                                <span className="mt-0.5 hidden text-[10px] font-semibold opacity-75 lg:block">{room.status === "Fuera de servicio" ? "FDS" : room.status}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                           {areaRooms.map((room) => (
-                            <div key={room.id} className="hidden rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:block">
+                            <div key={room.id} className="rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
                               <div className="mb-3 flex items-center justify-between gap-2">
                                 <span className="font-bold">{room.label || `Hab. ${room.number}`}</span>
                                 <Badge tone={room.tone}>{room.status}</Badge>
@@ -3737,7 +2916,13 @@ export default function HotelDailyControlApp() {
                                   className={inputStyle}
                                   value={room.status}
                                   onChange={(e) => {
-                                    updateRoomStatus(room, e.target.value);
+                                    const next = roomInventory.map((item) => {
+                                      const sameRoom = item.id === room.id || item.label === room.label;
+                                      return sameRoom ? { ...item, status: e.target.value } : item;
+                                    });
+                                    setRoomDetails(next);
+                                    setRoomDetailsByDate((current) => ({ ...current, [roomDate]: next }));
+                                    setRooms(summarizeRoomDetails(next));
                                   }}
                                 >
                                   {roomStatusOptions.map((status) => <option key={status}>{status}</option>)}
@@ -3750,203 +2935,6 @@ export default function HotelDailyControlApp() {
                       </div>
                     );
                   })}
-                </div>
-              </Card>
-            </div>
-          )}
-
-          {active === "calendar" && (
-            <div className="space-y-5 sm:space-y-6">
-              <Card>
-                <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h2 className="text-lg font-bold sm:text-xl">Calendario / Planning de reservas</h2>
-                    <p className="text-sm text-slate-500">Vista por rangos: entrada, salida, canal y habitación. Esta capa alimenta automáticamente el estado ocupado de habitaciones.</p>
-                  </div>
-                  <Badge tone={blockingReservationConflicts.length ? "red" : reservationConflicts.length ? "amber" : "green"}>{blockingReservationConflicts.length ? `${blockingReservationConflicts.length} bloqueantes` : reservationConflicts.length ? `${reservationConflicts.length} avisos` : "Sin conflictos"}</Badge>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_auto_auto] xl:items-end">
-                  <Field label="Inicio del planning"><input className={inputStyle} type="date" value={calendarStartDate} onChange={(e) => setCalendarStartDate(e.target.value)} /></Field>
-                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, -7))}><Icon name="calendar" size={18} /> 7 días antes</button>
-                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, 7))}><Icon name="calendar" size={18} /> 7 días después</button>
-                </div>
-                <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
-                  <b>Regla hotelera:</b> una reserva está ocupada desde la fecha de entrada incluida hasta la fecha de salida no incluida. Ejemplo: entrada 09/05 y salida 11/05 ocupa las noches del 09 y 10.
-                </div>
-              </Card>
-
-              <Card>
-                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h3 className="font-bold">Previsión próximos 10 días</h3>
-                    <p className="text-sm text-slate-500">Forecast calculado por noche ocupada según las reservas del planning visible.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Badge tone="green">{reservationForecast.total}{hotel.currency}</Badge>
-                    <Badge tone="slate">{reservationForecast.roomNights} room nights</Badge>
-                  </div>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  {reservationForecast.byChannel.map((item) => (
-                    <div key={item.channel} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <p className="text-xs text-slate-500">{item.channel}</p>
-                      <p className="mt-1 text-xl font-bold">{item.revenue}{hotel.currency}</p>
-                      <p className="text-xs text-slate-500">{item.roomNights} noches · {item.reservations.length} reservas</p>
-                    </div>
-                  ))}
-                  {reservationForecast.byChannel.length === 0 && <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">No hay ingresos previstos en el rango visible.</p>}
-                </div>
-              </Card>
-
-              <Card>
-                <h3 className="mb-4 font-bold">Añadir reserva al planning</h3>
-                <form onSubmit={addReservation} className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  <Field label="Habitación">
-                    <select className={inputStyle} value={reservationForm.roomLabel} onChange={(e) => setReservationForm({ ...reservationForm, roomLabel: e.target.value })}>
-                      <option value="">Seleccionar habitación</option>
-                      {roomOptions.map((room) => <option key={room} value={room}>{room}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Cliente / nombre opcional"><input className={inputStyle} value={reservationForm.guestName} onChange={(e) => setReservationForm({ ...reservationForm, guestName: e.target.value })} placeholder="Ej.: Juan Pérez" /></Field>
-                  <Field label="Canal">
-                    <select className={inputStyle} value={reservationForm.channel} onChange={(e) => setReservationForm({ ...reservationForm, channel: e.target.value })}>
-                      <option value="">Pendiente</option>
-                      {channels.filter((channel) => channel.name?.trim()).map((channel) => <option key={channel.name} value={channel.name}>{channel.name}</option>)}
-                    </select>
-                  </Field>
-                  <Field label="Estado"><select className={inputStyle} value={reservationForm.status} onChange={(e) => setReservationForm({ ...reservationForm, status: e.target.value })}><option>Confirmada</option><option>Tentativa</option><option>Cancelada</option><option>No-show</option></select></Field>
-                  <Field label="Entrada"><input className={inputStyle} type="date" value={reservationForm.checkinDate} onChange={(e) => setReservationForm({ ...reservationForm, checkinDate: e.target.value, checkoutDate: reservationForm.checkoutDate <= e.target.value ? addDaysIso(e.target.value, 1) : reservationForm.checkoutDate })} /></Field>
-                  <Field label="Salida"><input className={inputStyle} type="date" value={reservationForm.checkoutDate} onChange={(e) => setReservationForm({ ...reservationForm, checkoutDate: e.target.value })} /></Field>
-                  <Field label={`Precio/noche (${hotel.currency})`}><input className={inputStyle} type="number" value={reservationForm.nightlyRate || ""} onChange={(e) => setReservationForm({ ...reservationForm, nightlyRate: e.target.value, totalAmount: Math.round(((Number(e.target.value) || 0) * Math.max(reservationNights(reservationForm), 1)) * 100) / 100 })} /></Field>
-                  <Field label="Referencia"><input className={inputStyle} value={reservationForm.reference} onChange={(e) => setReservationForm({ ...reservationForm, reference: e.target.value })} placeholder="Ej.: BK-12345" /></Field>
-                  <Field label="Teléfono opcional"><input className={inputStyle} value={reservationForm.phone || ""} onChange={(e) => setReservationForm({ ...reservationForm, phone: e.target.value })} placeholder="Ej.: +34 600 000 000" /></Field>
-                  <Field label="Email opcional"><input className={inputStyle} type="email" value={reservationForm.email || ""} onChange={(e) => setReservationForm({ ...reservationForm, email: e.target.value })} placeholder="cliente@email.com" /></Field>
-                  <div className="sm:col-span-2 xl:col-span-4">
-                    <Field label="Notas"><input className={inputStyle} value={reservationForm.notes} onChange={(e) => setReservationForm({ ...reservationForm, notes: e.target.value })} placeholder="Observaciones de la reserva" /></Field>
-                  </div>
-                  <div className="sm:col-span-2 xl:col-span-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="flex flex-wrap gap-2"><Badge tone="blue">Noches: {reservationNights(reservationForm)}</Badge><Badge tone="green">Total: {calculateTotalFromNightly(reservationForm)}{hotel.currency}</Badge></div>
-                    <button className={buttonDark} type="submit"><Icon name="plus" size={18} /> Añadir reserva</button>
-                  </div>
-                </form>
-              </Card>
-
-              {reservationConflicts.length > 0 && (
-                <Card className={blockingReservationConflicts.length ? "border-red-200 bg-red-50" : "border-amber-200 bg-amber-50"}>
-                  <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className={cls("font-bold", blockingReservationConflicts.length ? "text-red-800" : "text-amber-900")}>{blockingReservationConflicts.length ? "Conflictos bloqueantes" : "Avisos de solape"}</h3>
-                      <p className={cls("text-sm", blockingReservationConflicts.length ? "text-red-800" : "text-amber-900")}>Las reservas confirmadas no deberían solaparse. Las tentativas pueden quedar como aviso hasta confirmación o pago.</p>
-                    </div>
-                    <Badge tone={blockingReservationConflicts.length ? "red" : "amber"}>{reservationConflicts.length} solapes</Badge>
-                  </div>
-                  <div className="space-y-2 text-sm">
-                    {reservationConflicts.map((reservation) => {
-                      const isBlocking = reservations.some((other) => other.id !== reservation.id && reservationsBlockingOverlap(reservation, other));
-                      return (
-                        <div key={`conflict-${reservation.id}`} className="flex flex-col gap-2 rounded-2xl bg-white/80 p-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className={isBlocking ? "text-red-800" : "text-amber-900"}>
-                            <b>{reservation.roomLabel}</b> · {formatDateEs(reservation.checkinDate)} → {formatDateEs(reservation.checkoutDate)} · {reservation.guestName || "Reserva sin nombre"} · {reservation.status || "Confirmada"}
-                          </div>
-                          <div className="flex flex-nowrap gap-1 overflow-x-auto pb-1">
-                            <button className={buttonTiny} type="button" onClick={() => openReservationModal(reservation)}><Icon name="edit" size={13} /> Editar</button>
-                            {isBlocking && <button className={buttonTiny} type="button" onClick={() => updateReservationStatus(reservation.id, "Tentativa")}><Icon name="check" size={13} /> Tentativa</button>}
-                            <button className={buttonTinyDanger} type="button" onClick={() => deleteReservation(reservation.id)}><Icon name="trash" size={13} /> Borrar</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </Card>
-              )}
-
-              <Card>
-                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h3 className="font-bold">Planning visual</h3>
-                    <p className="text-sm text-slate-500">Las barras muestran reservas por habitación durante los próximos 10 días. El importe visible principal es el precio por noche.</p>
-                  </div>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <Badge tone="slate">{reservations.length} reservas</Badge>
-                    <button className={buttonLight} type="button" onClick={() => setCalendarFullscreen(true)}><Icon name="view" size={18} /> Pantalla completa</button>
-                  </div>
-                </div>
-                <div className="max-h-[560px] overflow-auto rounded-2xl border border-slate-200">
-                  <div className="min-w-[980px]">
-                    <div className="grid grid-cols-[170px_repeat(10,minmax(92px,1fr))] border-b bg-slate-50 text-xs font-bold text-slate-600">
-                      <div className="sticky left-0 z-10 border-r bg-slate-50 p-3">Habitación</div>
-                      {calendarDays.map((day) => <div key={day} className="border-r p-3 text-center last:border-r-0">{formatDateEs(day).slice(0, 5)}</div>)}
-                    </div>
-                    {roomInventory.map((room) => {
-                      const label = room.label || `${room.area} · ${room.number}`;
-                      const rowReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservation.status !== "Cancelada" && reservation.status !== "No-show" && reservation.checkinDate < addDaysIso(calendarStartDate, calendarDays.length) && reservation.checkoutDate > calendarStartDate);
-                      return (
-                        <div key={`planning-${room.id}`} className="grid grid-cols-[170px_1fr] border-b text-xs last:border-b-0">
-                          <div className="sticky left-0 z-20 border-r bg-white p-3 font-bold">
-                            <span className="block truncate">{label}</span>
-                            <span className="text-[11px] font-normal text-slate-500">{room.area}</span>
-                          </div>
-                          <div className="relative h-[72px] bg-white">
-                            <div className="absolute inset-0 grid grid-cols-10">
-                              {calendarDays.map((day) => {
-                                const dayReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservationTouchesDate(reservation, day));
-                                const isCheckin = dayReservations.some((reservation) => reservation.checkinDate === day);
-                                const isCheckout = dayReservations.some((reservation) => reservation.checkoutDate === day);
-                                return (
-                                  <button key={`${label}-${day}-free`} type="button" onClick={() => openNewReservationModal(label, day)} className="h-[72px] border-r p-1 text-[10px] text-slate-300 transition hover:bg-sky-50 hover:text-sky-800 last:border-r-0">
-                                    {isCheckin ? "Entrada" : isCheckout ? "Salida" : "+"}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            {rowReservations.map((reservation) => {
-                              const startIndex = Math.max(daysBetweenIso(calendarStartDate, reservation.checkinDate), 0);
-                              const endIndex = Math.min(daysBetweenIso(calendarStartDate, reservation.checkoutDate), calendarDays.length);
-                              const span = Math.max(endIndex - startIndex, 1);
-                              return (
-                                <button
-                                  key={`bar-${reservation.id}`}
-                                  type="button"
-                                  onClick={() => openReservationModal(reservation)}
-                                  className={cls("absolute top-2 z-10 h-14 overflow-hidden rounded-xl border px-2 py-1 text-left text-[10px] font-bold leading-tight shadow-sm", reservation.channel === "Pendiente" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-sky-200 bg-sky-50 text-sky-900")}
-                                  style={{ left: `${startIndex * 10}%`, width: `calc(${span * 10}% - 8px)` }}
-                                  title={`${reservation.roomLabel} · ${reservation.guestName} · ${formatDateEs(reservation.checkinDate)} → ${formatDateEs(reservation.checkoutDate)}`}
-                                >
-                                  <span className="block truncate">{reservation.guestName || "Reserva"}</span>
-                                  <span className="block truncate font-normal">{reservation.channel || "Pendiente"} · {reservationNights(reservation)} noches</span>
-                                  <span className="block truncate font-normal">{reservationNightlyRate(reservation)}{hotel.currency}/noche · Total {calculateTotalFromNightly(reservation)}{hotel.currency}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </Card>
-
-              <Card>
-                <h3 className="mb-4 font-bold">Reservas registradas</h3>
-                <div className="grid gap-3">
-                  {reservations.map((reservation) => (
-                    <div key={reservation.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                        <div>
-                          <div className="mb-2 flex flex-wrap gap-2"><Badge tone="blue">{reservation.channel || "Pendiente"}</Badge><Badge tone="slate">{reservation.status}</Badge><Badge tone="slate">{reservationNights(reservation)} noches</Badge></div>
-                          <p className="font-bold">{reservation.roomLabel}</p>
-                          <p className="text-sm text-slate-600">{formatDateEs(reservation.checkinDate)} → {formatDateEs(reservation.checkoutDate)} · {reservation.guestName || "Sin nombre"} · {reservationNightlyRate(reservation)}{hotel.currency}/noche · Total {calculateTotalFromNightly(reservation)}{hotel.currency}</p>
-                          {reservation.reference && <p className="text-xs text-slate-500">Ref.: {reservation.reference}</p>}
-                        </div>
-                        <div className="flex flex-nowrap gap-1 overflow-x-auto pb-1">
-                          <button className={buttonTiny} type="button" onClick={() => openReservationModal(reservation)}>Editar</button>
-                          <button className={buttonTiny} type="button" onClick={() => loadReservationInRooms(reservation)}>Ver día</button>
-                          <button className={buttonTinyDanger} type="button" onClick={() => deleteReservation(reservation.id)}>Borrar</button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  {reservations.length === 0 && <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Todavía no hay reservas en el planning.</p>}
                 </div>
               </Card>
             </div>
@@ -3968,53 +2956,7 @@ export default function HotelDailyControlApp() {
                 <textarea className="h-96 w-full rounded-2xl border border-slate-300 bg-slate-50 p-4 font-mono text-xs sm:text-sm" readOnly value={reportText} />
               </Card>
 
-              {reservationModal && (
-        <Modal
-          title={reservationModal.mode === "new" ? "Nueva reserva" : "Editar reserva"}
-          subtitle={`${reservationModal.roomLabel || "Habitación no seleccionada"} · ${formatDateEs(reservationModal.checkinDate)} → ${formatDateEs(reservationModal.checkoutDate)}`}
-          onClose={() => setReservationModal(null)}
-          footer={
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              {reservationModal.mode !== "new" && <button className={buttonTinyDanger} type="button" onClick={() => deleteReservation(reservationModal.id)}><Icon name="trash" size={14} /> Borrar</button>}
-              <button className={buttonLight} type="button" onClick={() => setReservationModal(null)}><Icon name="cancel" size={18} /> Cancelar</button>
-              <button className={buttonDark} type="button" onClick={saveReservationModal}><Icon name="save" size={18} /> Guardar reserva</button>
-            </div>
-          }
-        >
-          <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Field label="Habitación">
-                <select className={inputStyle} value={reservationModal.roomLabel || ""} onChange={(e) => setReservationModal({ ...reservationModal, roomLabel: e.target.value })}>
-                  <option value="">Seleccionar habitación</option>
-                  {roomOptions.map((room) => <option key={room} value={room}>{room}</option>)}
-                </select>
-              </Field>
-              <Field label="Cliente / nombre"><input className={inputStyle} value={reservationModal.guestName || ""} onChange={(e) => setReservationModal({ ...reservationModal, guestName: e.target.value })} placeholder="Nombre del cliente" /></Field>
-              <Field label="Canal">
-                <select className={inputStyle} value={reservationModal.channel || ""} onChange={(e) => setReservationModal({ ...reservationModal, channel: e.target.value })}>
-                  <option value="">Pendiente</option>
-                  {channels.filter((channel) => channel.name?.trim()).map((channel) => <option key={channel.name} value={channel.name}>{channel.name}</option>)}
-                </select>
-              </Field>
-              <Field label="Estado"><select className={inputStyle} value={reservationModal.status || "Confirmada"} onChange={(e) => setReservationModal({ ...reservationModal, status: e.target.value })}><option>Confirmada</option><option>Tentativa</option><option>Cancelada</option><option>No-show</option></select></Field>
-              <Field label="Entrada"><input className={inputStyle} type="date" value={reservationModal.checkinDate || todayIso()} onChange={(e) => setReservationModal({ ...reservationModal, checkinDate: e.target.value, checkoutDate: reservationModal.checkoutDate <= e.target.value ? addDaysIso(e.target.value, 1) : reservationModal.checkoutDate })} /></Field>
-              <Field label="Salida"><input className={inputStyle} type="date" value={reservationModal.checkoutDate || addDaysIso(todayIso(), 1)} onChange={(e) => setReservationModal({ ...reservationModal, checkoutDate: e.target.value })} /></Field>
-              <Field label={`Precio/noche (${hotel.currency})`}><input className={inputStyle} type="number" value={reservationModal.nightlyRate || ""} onChange={(e) => setReservationModal({ ...reservationModal, nightlyRate: e.target.value, totalAmount: Math.round(((Number(e.target.value) || 0) * Math.max(reservationNights(reservationModal), 1)) * 100) / 100 })} /></Field>
-              <Field label="Referencia"><input className={inputStyle} value={reservationModal.reference || ""} onChange={(e) => setReservationModal({ ...reservationModal, reference: e.target.value })} placeholder="Ej.: BK-12345" /></Field>
-              <Field label="Teléfono opcional"><input className={inputStyle} value={reservationModal.phone || ""} onChange={(e) => setReservationModal({ ...reservationModal, phone: e.target.value })} placeholder="Ej.: +34 600 000 000" /></Field>
-              <Field label="Email opcional"><input className={inputStyle} type="email" value={reservationModal.email || ""} onChange={(e) => setReservationModal({ ...reservationModal, email: e.target.value })} placeholder="cliente@email.com" /></Field>
-              <div className="sm:col-span-2">
-                <Field label="Notas"><input className={inputStyle} value={reservationModal.notes || ""} onChange={(e) => setReservationModal({ ...reservationModal, notes: e.target.value })} placeholder="Observaciones de la reserva" /></Field>
-              </div>
-            </div>
-            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
-              <b>Noches:</b> {reservationNights(reservationModal)} · <b>Precio/noche:</b> {reservationNightlyRate(reservationModal)}{hotel.currency} · <b>Total reserva:</b> {calculateTotalFromNightly(reservationModal)}{hotel.currency}. Puedes mover la reserva cambiando habitación, entrada o salida. Si se solapa con otra reserva, aparecerá aviso de posible overbooking.
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {viewingReport && (
+              {viewingReport && (
                 <Card className="border-blue-200 bg-blue-50">
                   <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
@@ -4071,7 +3013,7 @@ export default function HotelDailyControlApp() {
                   <table className="w-full min-w-[1040px] text-left text-sm">
                     <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Responsable</th><th>Reservas</th><th>Ingresos</th><th>Pendiente</th><th>Recomendación</th><th>Acciones</th></tr></thead>
                     <tbody>
-                      {filteredReports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(r.date)}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td><td className="pr-3"><div className="flex flex-nowrap gap-1"><button className={buttonTiny} type="button" onClick={() => viewReport(r)}><Icon name="view" size={13} /> Ver</button><button className={buttonTiny} type="button" onClick={() => copySingleReport(r)}><Icon name="copy" size={13} /> {copiedReportId === r.id ? "Copiado" : "Copiar"}</button><button className={buttonTiny} type="button" onClick={() => printSingleReport(r)}><Icon name="print" size={13} /> Imprimir</button><button className={buttonTiny} type="button" onClick={() => editReport(r)}><Icon name="edit" size={13} /> Editar</button><button className={buttonTinyDanger} type="button" onClick={() => askDeleteReport(r)}><Icon name="trash" size={13} /> Borrar</button></div></td></tr>)}
+                      {filteredReports.map((r) => <tr key={r.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(r.date)}</td><td>{r.manager || "-"}</td><td>{r.newBookings}</td><td>{r.revenue}{hotel.currency}</td><td>{r.pendingPayments}{hotel.currency}</td><td className="max-w-md truncate pr-3">{r.recommendation}</td><td className="pr-3"><div className="flex flex-wrap gap-2"><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => viewReport(r)}><Icon name="view" size={14} /> Ver</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => copySingleReport(r)}><Icon name="copy" size={14} /> {copiedReportId === r.id ? "Copiado" : "Copiar"}</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => printSingleReport(r)}><Icon name="print" size={14} /> Imprimir</button><button className="inline-flex items-center gap-1 rounded-xl border border-slate-300 px-3 py-2 text-xs font-bold hover:bg-slate-50" type="button" onClick={() => editReport(r)}><Icon name="edit" size={14} /> Editar</button><button className="inline-flex items-center gap-1 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-100" type="button" onClick={() => askDeleteReport(r)}><Icon name="trash" size={14} /> Borrar</button></div></td></tr>)}
                     </tbody>
                   </table>
                 </div>
@@ -4088,12 +3030,12 @@ export default function HotelDailyControlApp() {
                       <p className="text-sm text-slate-600"><b>Responsable:</b> {r.manager || "-"}</p>
                       <p className="text-sm text-slate-600"><b>Reservas:</b> {r.newBookings} · <b>Pendiente:</b> {r.pendingPayments}{hotel.currency}</p>
                       <p className="mt-2 line-clamp-2 text-sm text-slate-600">{r.recommendation || "Sin recomendación."}</p>
-                      <div className="mt-3 flex flex-nowrap gap-1 overflow-x-auto pb-1">
-                        <button className={buttonTiny} type="button" onClick={() => viewReport(r)}>Ver</button>
-                        <button className={buttonTiny} type="button" onClick={() => copySingleReport(r)}>{copiedReportId === r.id ? "Copiado" : "Copiar"}</button>
-                        <button className={buttonTiny} type="button" onClick={() => printSingleReport(r)}>Imprimir</button>
-                        <button className={buttonTiny} type="button" onClick={() => editReport(r)}>Editar</button>
-                        <button className={buttonTinyDanger} type="button" onClick={() => askDeleteReport(r)}>Borrar</button>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold" type="button" onClick={() => viewReport(r)}>Ver</button>
+                        <button className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold" type="button" onClick={() => copySingleReport(r)}>{copiedReportId === r.id ? "Copiado" : "Copiar"}</button>
+                        <button className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold" type="button" onClick={() => printSingleReport(r)}>Imprimir</button>
+                        <button className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold" type="button" onClick={() => editReport(r)}>Editar</button>
+                        <button className="col-span-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700" type="button" onClick={() => askDeleteReport(r)}>Borrar</button>
                       </div>
                     </div>
                   ))}
@@ -4106,9 +3048,9 @@ export default function HotelDailyControlApp() {
             <div className="space-y-5 sm:space-y-6">
               <Card>
                 <h2 className="text-lg font-bold sm:text-xl">Configuración del hotel</h2>
-                <p className="mb-5 text-sm text-slate-500">El hotel se carga desde Supabase si está conectado. Estas reglas se usan para generar recomendaciones automáticas en Dirección e Informes.</p>
+                <p className="mb-5 text-sm text-slate-500">El hotel se carga desde Supabase si está conectado.</p>
                 <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <Badge tone="purple">Reglas de decisión y alertas</Badge>
+                  <Badge tone="purple">Umbrales de revenue</Badge>
                   <button className={buttonDark} type="button" onClick={saveHotelConfig}><Icon name="save" size={18} /> Guardar configuración</button>
                 </div>
                 <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -4120,19 +3062,6 @@ export default function HotelDailyControlApp() {
                   <Field label="Riesgo Booking %"><input className={inputStyle} type="number" value={hotel.bookingRiskLimit} onChange={(e) => setHotel({ ...hotel, bookingRiskLimit: Number(e.target.value) })} /></Field>
                   <Field label="Alta ocupación %"><input className={inputStyle} type="number" value={hotel.highOccupancyLimit} onChange={(e) => setHotel({ ...hotel, highOccupancyLimit: Number(e.target.value) })} /></Field>
                   <Field label="Baja ocupación %"><input className={inputStyle} type="number" value={hotel.lowOccupancyLimit} onChange={(e) => setHotel({ ...hotel, lowOccupancyLimit: Number(e.target.value) })} /></Field>
-                </div>
-                <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4">
-                  <div className="mb-3 flex items-center gap-2">
-                    <Icon name="sparkles" size={18} />
-                    <h3 className="font-bold text-sky-950">Cómo funcionan las recomendaciones automáticas</h3>
-                  </div>
-                  <div className="grid gap-3 text-sm text-slate-700 md:grid-cols-2">
-                    <div className="rounded-2xl bg-white p-3"><b>Objetivo web directa %</b><p className="mt-1 text-slate-600">Si la venta directa baja de este porcentaje, la app recomienda reforzar reserva directa.</p></div>
-                    <div className="rounded-2xl bg-white p-3"><b>Riesgo Booking %</b><p className="mt-1 text-slate-600">Si Booking supera este porcentaje, avisa de dependencia alta de OTA.</p></div>
-                    <div className="rounded-2xl bg-white p-3"><b>Alta ocupación %</b><p className="mt-1 text-slate-600">Si la ocupación supera este valor, recomienda subir precios, cerrar descuentos o proteger venta directa.</p></div>
-                    <div className="rounded-2xl bg-white p-3"><b>Baja ocupación %</b><p className="mt-1 text-slate-600">Si la ocupación cae por debajo, recomienda revisar precio, abrir canales o activar promoción controlada.</p></div>
-                  </div>
-                  <p className="mt-3 text-xs text-sky-900">También se generan avisos si hay habitaciones bloqueadas/FDS o cobros pendientes altos.</p>
                 </div>
               </Card>
 
@@ -4236,26 +3165,19 @@ export default function HotelDailyControlApp() {
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h3 className="font-bold">Canales de venta</h3>
-                    <p className="text-sm text-slate-500">Estos canales aparecen al marcar una habitación como ocupada y se usan para calcular la producción del parte diario.</p>
+                    <p className="text-sm text-slate-500">Control básico de producción y comisiones por canal.</p>
                   </div>
-                  <div className="flex flex-col gap-2 sm:flex-row">
-                    <button className={buttonLight} type="button" onClick={addChannel}><Icon name="plus" size={18} /> Añadir canal</button>
-                    <button className={buttonDark} type="button" onClick={saveChannels}><Icon name="save" size={18} /> Guardar canales</button>
-                  </div>
+                  <button className={buttonDark} type="button" onClick={saveChannels}><Icon name="save" size={18} /> Guardar canales</button>
                 </div>
                 <div className="grid gap-4">
                   {channels.map((channel, index) => (
-                    <div key={channel.id || `channel-${index}`} className="grid gap-3 rounded-2xl bg-slate-50 p-3 sm:grid-cols-2 xl:grid-cols-[1.2fr_.6fr_.6fr_.6fr_auto] xl:items-end">
+                    <div key={`${channel.name}-${index}`} className="grid gap-3 rounded-2xl bg-slate-50 p-3 sm:grid-cols-4">
                       <Field label="Canal"><input className={inputStyle} value={channel.name} onChange={(e) => updateChannel(index, "name", e.target.value)} /></Field>
                       <Field label="Reservas"><input className={inputStyle} type="number" value={channel.bookings} onChange={(e) => updateChannel(index, "bookings", e.target.value)} /></Field>
                       <Field label="Ingresos"><input className={inputStyle} type="number" value={channel.revenue} onChange={(e) => updateChannel(index, "revenue", e.target.value)} /></Field>
                       <Field label="Comisión %"><input className={inputStyle} type="number" value={channel.commission} onChange={(e) => updateChannel(index, "commission", e.target.value)} /></Field>
-                      <button className={buttonLight} type="button" onClick={() => deleteChannel(index)}><Icon name="trash" size={18} /> Borrar</button>
                     </div>
                   ))}
-                </div>
-                <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
-                  <b>Nota:</b> si añades canales como Teléfono, Walk-in, Agencia, Airbnb o Hotelbeds, aparecerán automáticamente en el selector de habitación ocupada. Para que Web directa, Booking y Expedia alimenten los contadores del parte, mantén esos nombres reconocibles.
                 </div>
               </Card>
 
@@ -4299,134 +3221,6 @@ export default function HotelDailyControlApp() {
           </a>
         </div>
       </footer>
-
-      {calendarFullscreen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/70 p-2 sm:p-4" role="dialog" aria-modal="true">
-          <div className="flex h-full flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
-            <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-lg font-bold sm:text-xl">Planning visual · Pantalla completa</h3>
-                <p className="text-sm text-slate-500">{hotel.name} · desde {formatDateEs(calendarStartDate)} · {reservations.length} reservas</p>
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, -7))}><Icon name="calendar" size={18} /> 7 días antes</button>
-                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, 7))}><Icon name="calendar" size={18} /> 7 días después</button>
-                <button className={buttonDark} type="button" onClick={() => setCalendarFullscreen(false)}><Icon name="cancel" size={18} /> Cerrar</button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-auto p-4">
-              <div className="min-w-[1180px] rounded-2xl border border-slate-200">
-                <div className="grid grid-cols-[190px_repeat(10,minmax(100px,1fr))] border-b bg-slate-50 text-xs font-bold text-slate-600">
-                  <div className="sticky left-0 z-20 border-r bg-slate-50 p-3">Habitación</div>
-                  {calendarDays.map((day) => <div key={`full-${day}`} className="border-r p-3 text-center last:border-r-0">{formatDateEs(day).slice(0, 5)}</div>)}
-                </div>
-                {roomInventory.map((room) => {
-                  const label = room.label || `${room.area} · ${room.number}`;
-                  const rowReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservation.status !== "Cancelada" && reservation.status !== "No-show" && reservation.checkinDate < addDaysIso(calendarStartDate, calendarDays.length) && reservation.checkoutDate > calendarStartDate);
-                  return (
-                    <div key={`fullscreen-planning-${room.id}`} className="grid grid-cols-[190px_1fr] border-b text-xs last:border-b-0">
-                      <div className="sticky left-0 z-20 border-r bg-white p-3 font-bold">
-                        <span className="block truncate">{label}</span>
-                        <span className="text-[11px] font-normal text-slate-500">{room.area}</span>
-                      </div>
-                      <div className="relative h-[72px] bg-white">
-                        <div className="absolute inset-0 grid grid-cols-10">
-                          {calendarDays.map((day) => {
-                            const dayReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservationTouchesDate(reservation, day));
-                            const isCheckin = dayReservations.some((reservation) => reservation.checkinDate === day);
-                            const isCheckout = dayReservations.some((reservation) => reservation.checkoutDate === day);
-                            return (
-                              <button key={`full-${label}-${day}-free`} type="button" onClick={() => openNewReservationModal(label, day)} className="h-[72px] border-r p-1 text-[10px] text-slate-300 transition hover:bg-sky-50 hover:text-sky-800 last:border-r-0">
-                                {isCheckin ? "Entrada" : isCheckout ? "Salida" : "+"}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        {rowReservations.map((reservation) => {
-                          const startIndex = Math.max(daysBetweenIso(calendarStartDate, reservation.checkinDate), 0);
-                          const endIndex = Math.min(daysBetweenIso(calendarStartDate, reservation.checkoutDate), calendarDays.length);
-                          const span = Math.max(endIndex - startIndex, 1);
-                          return (
-                            <button
-                              key={`fullscreen-bar-${reservation.id}`}
-                              type="button"
-                              onClick={() => openReservationModal(reservation)}
-                              className={cls("absolute top-2 z-10 h-14 overflow-hidden rounded-xl border px-2 py-1 text-left text-[10px] font-bold leading-tight shadow-sm", reservation.channel === "Pendiente" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-sky-200 bg-sky-50 text-sky-900")}
-                              style={{ left: `${startIndex * 10}%`, width: `calc(${span * 10}% - 8px)` }}
-                              title={`${reservation.roomLabel} · ${reservation.guestName} · ${formatDateEs(reservation.checkinDate)} → ${formatDateEs(reservation.checkoutDate)}`}
-                            >
-                              <span className="block truncate">{reservation.guestName || "Reserva"}</span>
-                              <span className="block truncate font-normal">{reservation.channel || "Pendiente"} · {reservationNightlyRate(reservation)}{hotel.currency}/noche</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {active === "rooms" && hasUnsavedRoomChanges && (
-        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-amber-200 bg-white/95 p-3 shadow-2xl backdrop-blur">
-          <div className="mx-auto flex max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm text-slate-700">
-              <b>Cambios de habitaciones sin guardar</b>
-              <p className="text-xs text-slate-500">Foto diaria: {formatDateEs(roomDate)}. Guarda para conservar cambios en Supabase.</p>
-            </div>
-            <button className={buttonDark} type="button" onClick={saveRooms}><Icon name="save" size={18} /> Guardar estado</button>
-          </div>
-        </div>
-      )}
-
-      {reservationModal && (
-        <Modal
-          title={reservationModal.mode === "new" ? "Nueva reserva" : "Editar reserva"}
-          subtitle={`${reservationModal.roomLabel || "Habitación no seleccionada"} · ${formatDateEs(reservationModal.checkinDate)} → ${formatDateEs(reservationModal.checkoutDate)}`}
-          onClose={() => setReservationModal(null)}
-          footer={
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              {reservationModal.mode !== "new" && <button className={buttonTinyDanger} type="button" onClick={() => deleteReservation(reservationModal.id)}><Icon name="trash" size={14} /> Borrar</button>}
-              <button className={buttonLight} type="button" onClick={() => setReservationModal(null)}><Icon name="cancel" size={18} /> Cancelar</button>
-              <button className={buttonDark} type="button" onClick={saveReservationModal}><Icon name="save" size={18} /> Guardar reserva</button>
-            </div>
-          }
-        >
-          <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <Field label="Habitación">
-                <select className={inputStyle} value={reservationModal.roomLabel || ""} onChange={(e) => setReservationModal({ ...reservationModal, roomLabel: e.target.value })}>
-                  <option value="">Seleccionar habitación</option>
-                  {roomOptions.map((room) => <option key={room} value={room}>{room}</option>)}
-                </select>
-              </Field>
-              <Field label="Cliente / nombre"><input className={inputStyle} value={reservationModal.guestName || ""} onChange={(e) => setReservationModal({ ...reservationModal, guestName: e.target.value })} placeholder="Nombre del cliente" /></Field>
-              <Field label="Canal">
-                <select className={inputStyle} value={reservationModal.channel || ""} onChange={(e) => setReservationModal({ ...reservationModal, channel: e.target.value })}>
-                  <option value="">Pendiente</option>
-                  {channels.filter((channel) => channel.name?.trim()).map((channel) => <option key={channel.name} value={channel.name}>{channel.name}</option>)}
-                </select>
-              </Field>
-              <Field label="Estado"><select className={inputStyle} value={reservationModal.status || "Confirmada"} onChange={(e) => setReservationModal({ ...reservationModal, status: e.target.value })}><option>Confirmada</option><option>Tentativa</option><option>Cancelada</option><option>No-show</option></select></Field>
-              <Field label="Entrada"><input className={inputStyle} type="date" value={reservationModal.checkinDate || todayIso()} onChange={(e) => setReservationModal({ ...reservationModal, checkinDate: e.target.value, checkoutDate: reservationModal.checkoutDate <= e.target.value ? addDaysIso(e.target.value, 1) : reservationModal.checkoutDate })} /></Field>
-              <Field label="Salida"><input className={inputStyle} type="date" value={reservationModal.checkoutDate || addDaysIso(todayIso(), 1)} onChange={(e) => setReservationModal({ ...reservationModal, checkoutDate: e.target.value })} /></Field>
-              <Field label={`Precio/noche (${hotel.currency})`}><input className={inputStyle} type="number" value={reservationModal.nightlyRate || ""} onChange={(e) => setReservationModal({ ...reservationModal, nightlyRate: e.target.value, totalAmount: Math.round(((Number(e.target.value) || 0) * Math.max(reservationNights(reservationModal), 1)) * 100) / 100 })} /></Field>
-              <Field label="Referencia"><input className={inputStyle} value={reservationModal.reference || ""} onChange={(e) => setReservationModal({ ...reservationModal, reference: e.target.value })} placeholder="Ej.: BK-12345" /></Field>
-              <Field label="Teléfono opcional"><input className={inputStyle} value={reservationModal.phone || ""} onChange={(e) => setReservationModal({ ...reservationModal, phone: e.target.value })} placeholder="Ej.: +34 600 000 000" /></Field>
-              <Field label="Email opcional"><input className={inputStyle} type="email" value={reservationModal.email || ""} onChange={(e) => setReservationModal({ ...reservationModal, email: e.target.value })} placeholder="cliente@email.com" /></Field>
-              <div className="sm:col-span-2">
-                <Field label="Notas"><input className={inputStyle} value={reservationModal.notes || ""} onChange={(e) => setReservationModal({ ...reservationModal, notes: e.target.value })} placeholder="Observaciones de la reserva" /></Field>
-              </div>
-            </div>
-            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
-              <b>Noches:</b> {reservationNights(reservationModal)} · <b>Precio/noche:</b> {reservationNightlyRate(reservationModal)}{hotel.currency} · <b>Total calculado:</b> {calculateTotalFromNightly(reservationModal)}{hotel.currency}. Puedes mover la reserva cambiando habitación, entrada o salida. Si se solapa con otra reserva, aparecerá aviso de posible overbooking.
-            </div>
-          </div>
-        </Modal>
-      )}
 
       {viewingReport && (
         <Modal
@@ -4529,94 +3323,6 @@ export default function HotelDailyControlApp() {
         </Modal>
       )}
 
-      {roomStatusModal && (
-        <Modal
-          title={`${roomStatusModal.area || "Edificio"} · Hab. ${roomStatusModal.number}`}
-          subtitle={`Cambio rápido de estado para el ${formatDateEs(roomDate)}`}
-          onClose={() => setRoomStatusModal(null)}
-          footer={
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button className={buttonLight} type="button" onClick={() => setRoomStatusModal(null)}><Icon name="cancel" size={18} /> Cancelar</button>
-              <button className={buttonLight} type="button" onClick={() => openNewReservationModal(roomStatusModal.label || `${roomStatusModal.area} · ${roomStatusModal.number}`, roomDate)}><Icon name="calendar" size={18} /> Crear reserva</button>
-              <button className={buttonDark} type="button" onClick={saveRoomStatusModal}><Icon name="save" size={18} /> Aplicar estado</button>
-            </div>
-          }
-        >
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
-              <b>Uso recomendado:</b> este modal sirve para cambios operativos rápidos. Si quieres vender o reservar esta habitación, usa <b>Crear reserva</b> para abrir el planning con esta habitación y fecha ya seleccionadas.
-            </div>
-
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-sm text-slate-500">Estado actual / seleccionado</p>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <Badge tone={statusTone(roomStatusModal.status)}>{roomStatusModal.status}</Badge>
-                <span className="text-sm text-slate-600">{roomStatusModal.detail || statusDetail(roomStatusModal.status)}</span>
-              </div>
-            </div>
-
-            {roomStatusModal.reservationId && (
-              <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
-                <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <h4 className="font-bold text-sky-950">Reserva vinculada</h4>
-                    <p className="text-sm text-sky-900">Datos útiles para contactar o confirmar la reserva.</p>
-                  </div>
-                  <Badge tone="blue">{roomStatusModal.reservationChannel || roomStatusModal.bookingChannel || "Pendiente"}</Badge>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Cliente</p><p className="font-bold">{roomStatusModal.reservationGuest || "Sin nombre"}</p></div>
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Teléfono</p><p className="font-bold">{roomStatusModal.reservationPhone || "No indicado"}</p></div>
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Email</p><p className="font-bold break-all">{roomStatusModal.reservationEmail || "No indicado"}</p></div>
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Referencia</p><p className="font-bold">{roomStatusModal.reservationReference || roomStatusModal.bookingReference || "-"}</p></div>
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Entrada</p><p className="font-bold">{formatDateEs(roomStatusModal.reservationCheckin)}</p></div>
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Salida</p><p className="font-bold">{formatDateEs(roomStatusModal.reservationCheckout)}</p></div>
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Noches</p><p className="font-bold">{daysBetweenIso(roomStatusModal.reservationCheckin, roomStatusModal.reservationCheckout)}</p></div>
-                  <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Precio/noche</p><p className="font-bold">{roomStatusModal.reservationNightlyRate || roomStatusModal.bookingAmount || 0}{hotel.currency}</p></div>
-                </div>
-                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                  {roomStatusModal.reservationPhone && <a className={buttonLight} href={`tel:${roomStatusModal.reservationPhone}`}><Icon name="user" size={18} /> Llamar</a>}
-                  {roomStatusModal.reservationEmail && <a className={buttonLight} href={`mailto:${roomStatusModal.reservationEmail}?subject=${encodeURIComponent(`Reserva ${roomStatusModal.roomLabel || roomStatusModal.label || roomStatusModal.number}`)}`}><Icon name="file" size={18} /> Enviar email</a>}
-                  <button className={buttonLight} type="button" onClick={() => { const reservation = reservations.find((item) => item.id === roomStatusModal.reservationId); if (reservation) { setRoomStatusModal(null); window.setTimeout(() => openReservationModal(reservation), 0); } }}><Icon name="edit" size={18} /> Editar reserva</button>
-                </div>
-              </div>
-            )}
-            <Field label="Nuevo estado de la habitación">
-              <select className={inputStyle} value={roomStatusModal.status} onChange={(e) => setRoomStatusModal({ ...roomStatusModal, status: e.target.value })}>
-                {roomStatusOptions.map((status) => <option key={status}>{status}</option>)}
-              </select>
-            </Field>
-
-            {roomStatusModal.status === "Ocupada" && (
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                <div className="mb-3 flex flex-col gap-1">
-                  <h4 className="font-bold text-amber-950">Datos de la reserva</h4>
-                  <p className="text-sm text-amber-900">Opcional. Si no se sabe el canal, quedará como pendiente para completarlo después.</p>
-                </div>
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <Field label="Canal de reserva">
-                    <select className={inputStyle} value={roomStatusModal.bookingChannel || ""} onChange={(e) => setRoomStatusModal({ ...roomStatusModal, bookingChannel: e.target.value })}>
-                      <option value="">Pendiente / no indicado</option>
-                      {channels.filter((channel) => channel.name?.trim()).map((channel) => <option key={channel.name} value={channel.name}>{channel.name}</option>)}
-                    </select>
-                  </Field>
-                  <Field label={`Importe (${hotel.currency})`}>
-                    <input className={inputStyle} type="number" value={roomStatusModal.bookingAmount || ""} onChange={(e) => setRoomStatusModal({ ...roomStatusModal, bookingAmount: e.target.value })} placeholder="Ej.: 120" />
-                  </Field>
-                  <Field label="Referencia opcional">
-                    <input className={inputStyle} value={roomStatusModal.bookingReference || ""} onChange={(e) => setRoomStatusModal({ ...roomStatusModal, bookingReference: e.target.value })} placeholder="Ej.: BK-12345" />
-                  </Field>
-                </div>
-              </div>
-            )}
-
-            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
-              Este cambio actualiza la foto diaria en pantalla. Para persistirlo en Supabase, pulsa <b>Guardar estado</b> en Habitaciones.
-            </div>
-          </div>
-        </Modal>
-      )}
-
       {viewingChecklist && (
         <Modal
           title={`Cierre de checklist del ${formatDateEs(viewingChecklist.signoff_date)}`}
@@ -4636,77 +3342,6 @@ export default function HotelDailyControlApp() {
             <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Creado</p><p className="font-bold">{formatDateTimeEs(viewingChecklist.created_at)}</p></div>
           </div>
           <div className="mt-4 rounded-2xl bg-slate-50 p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingChecklist.notes || "Sin observaciones."}</p></div>
-        </Modal>
-      )}
-
-      {reservationConflictCandidate && (
-        <Modal
-          title="Habitación no disponible"
-          subtitle="La reserva confirmada se solapa con otra reserva confirmada. Cambia la habitación, modifica las fechas o guárdala como tentativa."
-          onClose={() => setReservationConflictCandidate(null)}
-          footer={
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button className={buttonLight} type="button" onClick={() => setReservationConflictCandidate(null)}><Icon name="cancel" size={18} /> Cancelar</button>
-              <button className={buttonLight} type="button" onClick={convertConflictDraftToTentative}><Icon name="check" size={18} /> Cambiar a tentativa</button>
-              <button className={buttonDark} type="button" onClick={() => { setReservationModal({ ...reservationConflictCandidate.draft, mode: reservationConflictCandidate.draft.mode || "new" }); setReservationConflictCandidate(null); }}><Icon name="edit" size={18} /> Editar fechas</button>
-            </div>
-          }
-        >
-          {(() => {
-            const draft = reservationConflictCandidate.draft;
-            const conflict = reservationConflictCandidate.conflict;
-            const availableAlternatives = getAvailableRoomsForDraft(draft, draft.id);
-            return (
-              <div className="space-y-4">
-                <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
-                  <h4 className="mb-2 font-bold">No se puede reservar {draft.roomLabel}</h4>
-                  <p>La habitación ya tiene una reserva confirmada en parte de este rango:</p>
-                  <p className="mt-2"><b>Nueva reserva:</b> {formatDateEs(draft.checkinDate)} → {formatDateEs(draft.checkoutDate)} · {draft.guestName || "Reserva sin nombre"}</p>
-                  <p><b>Reserva existente:</b> {formatDateEs(conflict.checkinDate)} → {formatDateEs(conflict.checkoutDate)} · {conflict.guestName || "Reserva sin nombre"} · {conflict.channel || "Pendiente"}</p>
-                </div>
-
-                <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4">
-                  <h4 className="mb-2 font-bold text-sky-950">Cambiar a una habitación disponible</h4>
-                  <p className="mb-3 text-sm text-sky-900">Estas habitaciones no tienen reservas confirmadas solapadas en las fechas seleccionadas.</p>
-                  {availableAlternatives.length ? (
-                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                      {availableAlternatives.slice(0, 18).map((roomLabel) => (
-                        <button key={roomLabel} type="button" className="rounded-2xl border border-slate-200 bg-white p-3 text-left text-sm font-semibold text-slate-700 transition hover:border-sky-300 hover:bg-sky-50" onClick={() => resolveReservationConflictWithRoom(roomLabel)}>
-                          {roomLabel}
-                        </button>
-                      ))}
-                      {availableAlternatives.length > 18 && <p className="rounded-2xl bg-white p-3 text-sm text-slate-500">+{availableAlternatives.length - 18} habitaciones más disponibles.</p>}
-                    </div>
-                  ) : (
-                    <p className="rounded-2xl bg-white p-3 text-sm text-slate-600">No hay habitaciones libres en ese rango. Cambia las fechas o cancela la operación.</p>
-                  )}
-                </div>
-              </div>
-            );
-          })()}
-        </Modal>
-      )}
-
-      {resetRoomsCandidate && (
-        <Modal
-          title="Confirmar recalculado desde reservas"
-          subtitle="Esta acción limpia la foto diaria manual y deja que el Planning marque las habitaciones ocupadas."
-          onClose={() => setResetRoomsCandidate(false)}
-          footer={
-            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-              <button className={buttonLight} type="button" onClick={() => setResetRoomsCandidate(false)}><Icon name="cancel" size={18} /> Cancelar</button>
-              <button className={buttonDark} type="button" onClick={resetRoomDayFromReservations}><Icon name="sync" size={18} /> Sí, recalcular</button>
-            </div>
-          }
-        >
-          <div className="space-y-3">
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-              <b>Ojo:</b> se pondrán las habitaciones manuales como disponibles y se borrarán canales/importes/referencias manuales de la foto diaria del {formatDateEs(roomDate)}.
-            </div>
-            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
-              Las reservas activas del calendario volverán a marcar automáticamente como ocupadas las habitaciones correspondientes. Después tendrás que pulsar <b>Guardar estado</b>.
-            </div>
-          </div>
         </Modal>
       )}
 
