@@ -15,6 +15,31 @@ const DEMO_HOTEL_ID = "local-demo-hotel";
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "").replace(/\/$/, "");
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
 const HAS_SUPABASE = Boolean(SUPABASE_URL && SUPABASE_KEY);
+const AUTH_STORAGE_KEY = "hotel_daily_control_auth_v1";
+
+const ROLES = ["Administrador", "Dirección", "Recepción", "Limpieza", "Mantenimiento"];
+
+const ROLE_TABS = {
+  Administrador: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "setup", "help"],
+  Dirección: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "help"],
+  Recepción: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "help"],
+  Limpieza: ["tasks", "rooms", "incidents", "help"],
+  Mantenimiento: ["incidents", "rooms", "help"],
+};
+
+function canAccessTab(role, tabId) {
+  return (ROLE_TABS[role] || ROLE_TABS.Recepción).includes(tabId);
+}
+
+function normalizeProfile(row, user = null) {
+  return {
+    id: row?.id || user?.id || "",
+    email: row?.email || user?.email || "",
+    fullName: row?.full_name || user?.email || "Usuario",
+    role: ROLES.includes(row?.role) ? row.role : "Recepción",
+    isActive: row?.is_active !== false,
+  };
+}
 
 const defaultHotel = {
   id: DEMO_HOTEL_ID,
@@ -322,6 +347,24 @@ function formatDateTimeEs(dateValue) {
   });
 }
 
+function readAuthSession() {
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAuthSession(session) {
+  try {
+    if (session) window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+    else window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch {
+    // localStorage puede fallar en algunos navegadores privados.
+  }
+}
+
 function readLocal() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -346,7 +389,7 @@ async function sb(path, options = {}) {
     ...options,
     headers: {
       apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${SUPABASE_KEY}`,
+      Authorization: `Bearer ${readAuthSession()?.access_token || SUPABASE_KEY}`,
       "Content-Type": "application/json",
       Prefer: "return=representation",
       ...(options.headers || {}),
@@ -581,6 +624,45 @@ function channelToRow(channel, hotelId) {
     revenue: Number(channel.revenue) || 0,
     commission: Number(channel.commission) || 0,
   };
+}
+
+function roomCatalogFromRow(row) {
+  return {
+    id: row.id,
+    area: row.area || "Edificio principal",
+    number: row.room_number || "",
+    label: row.room_label || `${row.area || "Edificio principal"} · ${row.room_number || ""}`,
+    sortOrder: row.sort_order || 0,
+    isActive: row.is_active !== false,
+  };
+}
+
+function roomCatalogToRow(room, hotelId, index = 0) {
+  const area = room.area || "Edificio principal";
+  const number = room.number || room.room_number || String(index + 1);
+  return {
+    hotel_id: hotelId,
+    area,
+    room_number: number,
+    sort_order: room.sortOrder || index + 1,
+    is_active: true,
+  };
+}
+
+function normalizeRoomCatalog(catalog) {
+  return (catalog || [])
+    .filter((room) => room && (room.number || room.room_number))
+    .map((room, index) => {
+      const area = room.area || "Edificio principal";
+      const number = room.number || room.room_number || String(index + 1);
+      return {
+        ...room,
+        area,
+        number,
+        label: room.label || `${area} · ${number}`,
+        sortOrder: room.sortOrder || index + 1,
+      };
+    });
 }
 
 function reservationFromRow(row) {
@@ -1253,6 +1335,11 @@ export default function HotelDailyControlApp() {
   const [copiedReportId, setCopiedReportId] = useState(null);
   const [lastAction, setLastAction] = useState("");
   const [connection, setConnection] = useState({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Preparando sistema..." : "Modo demostración" });
+  const [authSession, setAuthSession] = useState(typeof window !== "undefined" ? readAuthSession() : null);
+  const [authUser, setAuthUser] = useState(typeof window !== "undefined" ? readAuthSession()?.user || null : null);
+  const [authProfile, setAuthProfile] = useState(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authForm, setAuthForm] = useState({ email: "", password: "" });
   const [form, setForm] = useState({
     date: todayIso(),
     manager: "",
@@ -1306,18 +1393,32 @@ export default function HotelDailyControlApp() {
   const [reservationModal, setReservationModal] = useState(null);
   const [calendarFullscreen, setCalendarFullscreen] = useState(false);
   const [resetRoomsCandidate, setResetRoomsCandidate] = useState(false);
+  const [areaRenameCandidate, setAreaRenameCandidate] = useState(null);
+  const [areaDeleteCandidate, setAreaDeleteCandidate] = useState(null);
   const [reservationConflictCandidate, setReservationConflictCandidate] = useState(null);
 
   useEffect(() => {
     async function loadSupabase() {
       if (!HAS_SUPABASE) return;
+      if (!authSession?.access_token) {
+        setConnection({ status: "local", message: "Inicia sesión para cargar el sistema." });
+        return;
+      }
       try {
+        const profiles = await sb(`profiles?id=eq.${authSession.user.id}&select=*&limit=1`);
+        const loadedProfile = normalizeProfile(profiles?.[0], authSession.user);
+        if (!loadedProfile.isActive) {
+          throw new Error("Usuario desactivado. Contacta con administración.");
+        }
+        setAuthUser(authSession.user);
+        setAuthProfile(loadedProfile);
+
         const hotels = await sb("hotels?select=*&order=created_at.asc&limit=1");
         const normalizedHotel = normalizeHotel(hotels?.[0]);
         setHotel(normalizedHotel);
         setForm((old) => ({ ...old, shift: normalizedHotel.receptionHours || old.shift }));
 
-        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteSignoffs, remoteChannels, remoteReservations] = await Promise.all([
+        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteSignoffs, remoteChannels, remoteReservations, remoteRoomCatalog] = await Promise.all([
           sb(`daily_reports?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=50`),
           sb(`incidents?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=100`),
           sb(`room_status?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=1`),
@@ -1325,6 +1426,7 @@ export default function HotelDailyControlApp() {
           sb(`checklist_signoffs?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=30`),
           sb(`sales_channels?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.asc`),
           sb(`reservations?select=*&hotel_id=eq.${normalizedHotel.id}&order=checkin_date.asc,created_at.asc&limit=300`),
+          sb(`room_catalog?select=*&hotel_id=eq.${normalizedHotel.id}&is_active=eq.true&order=area.asc,sort_order.asc,room_number.asc`),
         ]);
 
         setReports(remoteReports?.length ? remoteReports.map(reportFromRow) : []);
@@ -1364,6 +1466,17 @@ export default function HotelDailyControlApp() {
         } else {
           setReservations([]);
         }
+
+        if (remoteRoomCatalog?.length) {
+          const catalogFromDb = normalizeRoomCatalog(remoteRoomCatalog.map(roomCatalogFromRow));
+          setRoomCatalog(catalogFromDb);
+        } else {
+          const seedCatalog = normalizeRoomCatalog(roomCatalog);
+          if (seedCatalog.length) {
+            await sb("room_catalog", { method: "POST", body: JSON.stringify(seedCatalog.map((room, index) => roomCatalogToRow(room, normalizedHotel.id, index))) });
+            setRoomCatalog(seedCatalog);
+          }
+        }
         setConnection({ status: "online", message: "Sistema sincronizado" });
       } catch (error) {
         console.error(error);
@@ -1372,7 +1485,7 @@ export default function HotelDailyControlApp() {
     }
 
     loadSupabase();
-  }, []);
+  }, [authSession?.access_token]);
 
   useEffect(() => {
     writeLocal({ hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, channels, reservations });
@@ -1529,8 +1642,72 @@ export default function HotelDailyControlApp() {
     ["setup", "Config.", "settings"],
     ["help", "Ayuda", "sparkles"],
   ];
+  const currentRole = authProfile?.role || "Recepción";
+  const visibleTabs = tabs.filter(([id]) => canAccessTab(currentRole, id));
+  const canManageUsers = currentRole === "Administrador";
+
+  async function loginWithEmail(e) {
+    e.preventDefault();
+    if (!HAS_SUPABASE) {
+      setConnection({ status: "local", message: "Modo demostración activo." });
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email: authForm.email.trim(), password: authForm.password }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Email o contraseña incorrectos.");
+      }
+
+      const session = await response.json();
+      writeAuthSession(session);
+      setAuthSession(session);
+      setAuthUser(session.user || null);
+      setAuthForm({ email: "", password: "" });
+      setConnection({ status: "loading", message: "Cargando sistema..." });
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: error?.message || "No se pudo iniciar sesión." });
+    } finally {
+      setAuthLoading(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      if (authSession?.access_token) {
+        await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
+          method: "POST",
+          headers: {
+            apikey: SUPABASE_KEY,
+            Authorization: `Bearer ${authSession.access_token}`,
+          },
+        });
+      }
+    } catch {
+      // Aunque falle el cierre remoto, cerramos sesión localmente.
+    }
+    writeAuthSession(null);
+    setAuthSession(null);
+    setAuthUser(null);
+    setAuthProfile(null);
+    setConnection({ status: "local", message: "Sesión cerrada." });
+  }
 
   function goToTab(id) {
+    if (!canAccessTab(currentRole, id)) {
+      setLastAction("Tu usuario no tiene permisos para acceder a este apartado.");
+      return;
+    }
     setActive(id);
     setMobileMenuOpen(false);
     window.setTimeout(() => {
@@ -2542,6 +2719,103 @@ export default function HotelDailyControlApp() {
     }
   }
 
+  async function saveRoomCatalogToSupabase() {
+    const normalizedCatalog = normalizeRoomCatalog(roomCatalog);
+    if (!normalizedCatalog.length) {
+      setLastAction("No hay habitaciones en el catálogo para guardar.");
+      return;
+    }
+
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        await sb(`room_catalog?hotel_id=eq.${hotel.id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        await sb("room_catalog", { method: "POST", body: JSON.stringify(normalizedCatalog.map((room, index) => roomCatalogToRow(room, hotel.id, index))) });
+        setRoomCatalog(normalizedCatalog);
+        setRoomDetails((current) => alignRoomDetailsToCatalog(normalizedCatalog, current));
+        setLastAction("Catálogo de edificios y habitaciones guardado correctamente.");
+      } else {
+        setRoomCatalog(normalizedCatalog);
+        setRoomDetails((current) => alignRoomDetailsToCatalog(normalizedCatalog, current));
+        setLastAction("Catálogo guardado en modo seguro local.");
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: "No se pudo guardar el catálogo de habitaciones." });
+      setLastAction("No se pudo guardar el catálogo de habitaciones.");
+    }
+  }
+
+  function renameCatalogArea(oldArea, newArea) {
+    const cleanName = newArea.trim();
+    if (!cleanName) {
+      setLastAction("El nombre del edificio no puede estar vacío.");
+      return;
+    }
+    if (cleanName !== oldArea && roomCatalog.some((room) => room.area === cleanName)) {
+      setLastAction(`Ya existe un edificio llamado ${cleanName}.`);
+      return;
+    }
+
+    setRoomCatalog((current) => normalizeRoomCatalog(current.map((room) => {
+      if (room.area !== oldArea) return room;
+      return { ...room, area: cleanName, label: `${cleanName} · ${room.number}` };
+    })));
+    setRoomDetails((current) => current.map((room) => {
+      if (room.area !== oldArea) return room;
+      return { ...room, area: cleanName, label: `${cleanName} · ${room.number}` };
+    }));
+    setRoomDetailsByDate((current) => {
+      const next = {};
+      Object.entries(current || {}).forEach(([date, details]) => {
+        next[date] = (details || []).map((room) => room.area === oldArea ? { ...room, area: cleanName, label: `${cleanName} · ${room.number}` } : room);
+      });
+      return next;
+    });
+    setAreaRenameCandidate(null);
+    setLastAction(`Edificio renombrado: ${oldArea} → ${cleanName}. Pulsa Guardar catálogo para conservar el cambio.`);
+  }
+
+  function requestDeleteCatalogArea(area) {
+    const areaRooms = roomCatalog.filter((room) => room.area === area);
+    const relatedReservations = reservations.filter((reservation) => String(reservation.roomLabel || "").startsWith(`${area} ·`));
+    const relatedIncidents = incidents.filter((incident) => String(incident.room || "").startsWith(`${area} ·`));
+    const relatedRoomSnapshots = Object.values(roomDetailsByDate || {}).reduce((total, details) => total + (details || []).filter((room) => room.area === area).length, 0);
+    const hasData = relatedReservations.length > 0 || relatedIncidents.length > 0 || relatedRoomSnapshots > 0;
+
+    setAreaDeleteCandidate({
+      area,
+      count: areaRooms.length,
+      reservationsCount: relatedReservations.length,
+      incidentsCount: relatedIncidents.length,
+      roomSnapshotsCount: relatedRoomSnapshots,
+      hasData,
+      confirmText: "",
+    });
+  }
+
+  function confirmDeleteCatalogArea() {
+    if (!areaDeleteCandidate?.area) return;
+    const area = areaDeleteCandidate.area;
+
+    if (areaDeleteCandidate.hasData && areaDeleteCandidate.confirmText !== "BORRAR") {
+      setLastAction("Para borrar un edificio con datos asociados escribe BORRAR en la confirmación.");
+      return;
+    }
+    const nextCatalog = normalizeRoomCatalog(roomCatalog.filter((room) => room.area !== area));
+    setRoomCatalog(nextCatalog);
+    setRoomDetails((current) => current.filter((room) => room.area !== area));
+    setRoomDetailsByDate((current) => {
+      const next = {};
+      Object.entries(current || {}).forEach(([date, details]) => {
+        next[date] = (details || []).filter((room) => room.area !== area);
+      });
+      return next;
+    });
+    setRooms(summarizeRoomDetails(nextCatalog.map((room) => ({ ...room, status: "Disponible" }))));
+    setAreaDeleteCandidate(null);
+    setLastAction(`Edificio eliminado del catálogo: ${area}. Las reservas e incidencias históricas no se han borrado. Pulsa Guardar catálogo para conservar el cambio.`);
+  }
+
   async function saveChannels() {
     try {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
@@ -2713,7 +2987,7 @@ export default function HotelDailyControlApp() {
     setLastAction("Plantilla del checklist restaurada a la versión base de 16 tareas.");
   }
 
-  function saveRoomCatalog() {
+  function applyRoomCatalogText() {
     const parsedCatalog = parseRoomCatalog(roomCatalogText);
     const alignedDetails = alignRoomDetailsToCatalog(parsedCatalog, roomDetails);
     const summarizedRooms = summarizeRoomDetails(alignedDetails);
@@ -2754,9 +3028,47 @@ export default function HotelDailyControlApp() {
     setLastAction("Catálogo en edición vaciado. Pulsa Guardar catálogo solo si quieres aplicar el cambio.");
   }
 
-  const activeTabLabel = tabs.find(([id]) => id === active)?.[1] || "Dirección";
+  const activeTabLabel = visibleTabs.find(([id]) => id === active)?.[1] || "Dirección";
   const connectionTone = connection.status === "online" ? "green" : connection.status === "error" ? "red" : connection.status === "loading" ? "amber" : "slate";
   const connectionIcon = connection.status === "online" ? "check" : "offline";
+
+  if (HAS_SUPABASE && !authSession?.access_token) {
+    return (
+      <div className="min-h-screen bg-[#f4f6fa] px-4 py-8 text-slate-900">
+        <div className="mx-auto flex min-h-[85vh] max-w-5xl items-center justify-center">
+          <Card className="w-full max-w-md">
+            <div className="mb-6 text-center">
+              <div className="mx-auto mb-4 inline-flex rounded-3xl bg-gradient-to-br from-[#3f7895] to-slate-800 p-4 text-white shadow-sm">
+                <Icon name="hotel" size={34} />
+              </div>
+              <h1 className="text-2xl font-bold">Hotel Daily Control</h1>
+              <p className="mt-2 text-sm text-slate-500">Acceso interno para recepción, dirección y operativa.</p>
+            </div>
+
+            <form onSubmit={loginWithEmail} className="space-y-4">
+              <Field label="Email">
+                <input className={inputStyle} type="email" value={authForm.email} onChange={(e) => setAuthForm({ ...authForm, email: e.target.value })} placeholder="usuario@hotel.com" autoComplete="email" required />
+              </Field>
+              <Field label="Contraseña">
+                <input className={inputStyle} type="password" value={authForm.password} onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })} placeholder="Contraseña" autoComplete="current-password" required />
+              </Field>
+              <button className={cls(buttonDark, "w-full")} type="submit" disabled={authLoading}>
+                <Icon name="lock" size={18} /> {authLoading ? "Entrando..." : "Entrar"}
+              </button>
+            </form>
+
+            {connection.message && (
+              <div className={cls("mt-4 rounded-2xl border p-4 text-sm", connection.status === "error" ? "border-red-200 bg-red-50 text-red-800" : "border-slate-200 bg-slate-50 text-slate-600")}>
+                {connection.message}
+              </div>
+            )}
+
+            <p className="mt-5 text-center text-xs text-slate-400">Desarrollado por Vielha Computer</p>
+          </Card>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f4f6fa] text-slate-900">
@@ -2776,6 +3088,8 @@ export default function HotelDailyControlApp() {
           <div className="flex items-center gap-2">
             <Badge tone={connectionTone}><span className="inline-flex items-center gap-1"><Icon name={connectionIcon} size={14} /> {connection.status === "online" ? "Sistema OK" : connection.status === "loading" ? "Preparando" : "Modo seguro"}</span></Badge>
             <button className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50" type="button" onClick={exportBackup}><Icon name="copy" size={14} /> <span className="hidden sm:inline">Copia JSON</span><span className="sm:hidden">Copia</span></button>
+            {authProfile && <Badge tone="blue"><span className="inline-flex items-center gap-1"><Icon name="user" size={14} /> <span className="hidden sm:inline">{authProfile.fullName} · </span>{authProfile.role}</span></Badge>}
+            {HAS_SUPABASE && authSession?.access_token && <button className="hidden rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 sm:inline-flex" type="button" onClick={logout}>Salir</button>}
             <button className="rounded-2xl border border-slate-300 bg-white p-2 text-slate-700 shadow-sm lg:hidden" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} aria-label="Abrir menú">
               <Icon name="menu" size={22} />
             </button>
@@ -2784,8 +3098,12 @@ export default function HotelDailyControlApp() {
 
         {mobileMenuOpen && (
           <div className="border-t border-slate-200 bg-white px-3 py-3 lg:hidden">
+            <div className="mb-3 flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2 text-sm">
+              <span className="font-semibold text-slate-700">{authProfile ? `${authProfile.fullName} · ${authProfile.role}` : "Usuario"}</span>
+              {HAS_SUPABASE && authSession?.access_token && <button className="font-bold text-[#2f5f7a]" type="button" onClick={logout}>Salir</button>}
+            </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {tabs.map(([id, label, icon]) => (
+              {visibleTabs.map(([id, label, icon]) => (
                 <button key={id} onClick={() => goToTab(id)} className={cls("flex items-center gap-2 rounded-2xl px-3 py-3 text-left text-sm font-semibold", active === id ? "bg-[#2f5f7a] text-white shadow-sm" : "bg-slate-100 text-slate-700")}>
                   <Icon name={icon} size={18} />
                   {label}
@@ -2799,7 +3117,7 @@ export default function HotelDailyControlApp() {
       <main className="mx-auto grid max-w-7xl gap-5 px-3 py-5 sm:px-4 sm:py-6 lg:grid-cols-[250px_1fr]">
         <aside className="hidden rounded-3xl border border-slate-200/80 bg-white p-3 shadow-[0_1px_3px_rgba(15,23,42,0.08)] lg:sticky lg:top-24 lg:block lg:h-fit">
           <nav className="space-y-1">
-            {tabs.map(([id, label, icon]) => (
+            {visibleTabs.map(([id, label, icon]) => (
               <button key={id} onClick={() => goToTab(id)} className={cls("flex w-full items-center gap-3 rounded-2xl px-4 py-3 text-left text-sm font-semibold transition", active === id ? "bg-[#2f5f7a] text-white shadow-sm" : "text-slate-600 hover:bg-sky-50 hover:text-sky-900")}>
                 <Icon name={icon} size={18} />
                 {label}
@@ -4272,7 +4590,7 @@ export default function HotelDailyControlApp() {
                   ].join(String.fromCharCode(10))} />
                 </Field>
                 <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-                  <button className={buttonDark} type="button" onClick={saveRoomCatalog}><Icon name="save" size={18} /> Guardar catálogo</button>
+                  <button className={buttonDark} type="button" onClick={applyRoomCatalogText}><Icon name="save" size={18} /> Aplicar texto del catálogo</button>
                   <button className={buttonLight} type="button" onClick={resetRoomCatalogFromCurrent}><Icon name="sync" size={18} /> Restaurar texto actual</button>
                   <button className={buttonLight} type="button" onClick={clearRoomCatalogText}><Icon name="trash" size={18} /> Vaciar texto</button>
                 </div>
@@ -4312,6 +4630,39 @@ export default function HotelDailyControlApp() {
                 </div>
                 <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                   <b>Importante:</b> los cambios en esta plantilla se aplican a checklists nuevos. Si ya hay tareas creadas para una fecha, se mantienen para respetar el histórico.
+                </div>
+              </Card>
+
+              <Card>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Catálogo de edificios y habitaciones</h3>
+                    <p className="text-sm text-slate-500">Este catálogo se usa en Habitaciones, Calendario, Incidencias y Dirección. Al guardarlo, se sincroniza para todos los equipos.</p>
+                  </div>
+                  <button className={buttonDark} type="button" onClick={saveRoomCatalogToSupabase}><Icon name="save" size={18} /> Guardar catálogo</button>
+                </div>
+                <div className="space-y-3">
+                  {Object.entries(groupRoomsByArea(roomCatalog)).map(([area, areaRooms]) => (
+                    <div key={`catalog-${area}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-center">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Edificio / estancia</p>
+                          <h4 className="mt-1 text-lg font-bold text-slate-900">{area}</h4>
+                        </div>
+                        <div className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-slate-700">{areaRooms.length} habitaciones</div>
+                        <button className={buttonTiny} type="button" onClick={() => setAreaRenameCandidate({ oldArea: area, newArea: area })}><Icon name="edit" size={14} /> Renombrar</button>
+                        <button className={buttonTinyDanger} type="button" onClick={() => requestDeleteCatalogArea(area)}><Icon name="trash" size={14} /> Borrar edificio</button>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {areaRooms.slice(0, 18).map((room) => <span key={`${area}-${room.number}`} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-600">{room.number}</span>)}
+                        {areaRooms.length > 18 && <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-bold text-slate-500">+{areaRooms.length - 18} más</span>}
+                      </div>
+                    </div>
+                  ))}
+                  {!roomCatalog.length && <p className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">No hay habitaciones configuradas. Añade un edificio/estancia para crear el catálogo.</p>}
+                </div>
+                <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+                  <b>Importante:</b> si borras un edificio del catálogo, no se borran reservas históricas. Solo deja de aparecer como edificio disponible para nuevas operaciones.
                 </div>
               </Card>
 
@@ -4727,6 +5078,65 @@ export default function HotelDailyControlApp() {
             <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Creado</p><p className="font-bold">{formatDateTimeEs(viewingChecklist.created_at)}</p></div>
           </div>
           <div className="mt-4 rounded-2xl bg-slate-50 p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingChecklist.notes || "Sin observaciones."}</p></div>
+        </Modal>
+      )}
+
+      {areaRenameCandidate && (
+        <Modal
+          title="Renombrar edificio / estancia"
+          subtitle="El cambio se aplicará al catálogo actual. Después pulsa Guardar catálogo para conservarlo."
+          onClose={() => setAreaRenameCandidate(null)}
+          footer={
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button className={buttonLight} type="button" onClick={() => setAreaRenameCandidate(null)}><Icon name="cancel" size={18} /> Cancelar</button>
+              <button className={buttonDark} type="button" onClick={() => renameCatalogArea(areaRenameCandidate.oldArea, areaRenameCandidate.newArea)}><Icon name="save" size={18} /> Aplicar nombre</button>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            <Field label="Nombre actual"><input className={inputStyle} value={areaRenameCandidate.oldArea} disabled /></Field>
+            <Field label="Nuevo nombre"><input className={inputStyle} value={areaRenameCandidate.newArea} onChange={(e) => setAreaRenameCandidate({ ...areaRenameCandidate, newArea: e.target.value })} autoFocus /></Field>
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+              Las habitaciones mantendrán su número, pero pasarán a pertenecer al nuevo edificio/estancia.
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {areaDeleteCandidate && (
+        <Modal
+          title="Borrar edificio del catálogo"
+          subtitle="Esta acción elimina el edificio de la configuración de habitaciones."
+          onClose={() => setAreaDeleteCandidate(null)}
+          footer={
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button className={buttonLight} type="button" onClick={() => setAreaDeleteCandidate(null)}><Icon name="cancel" size={18} /> Cancelar</button>
+              <button className={buttonTinyDanger} type="button" onClick={confirmDeleteCatalogArea}><Icon name="trash" size={14} /> Sí, borrar edificio</button>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-800">
+              Vas a borrar <b>{areaDeleteCandidate.area}</b> del catálogo, junto con <b>{areaDeleteCandidate.count}</b> habitaciones configuradas.
+            </div>
+            {areaDeleteCandidate.hasData && (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                <p className="font-bold">Este edificio tiene datos asociados.</p>
+                <ul className="mt-2 list-inside list-disc space-y-1">
+                  <li>{areaDeleteCandidate.reservationsCount} reservas asociadas</li>
+                  <li>{areaDeleteCandidate.incidentsCount} incidencias asociadas</li>
+                  <li>{areaDeleteCandidate.roomSnapshotsCount} estados diarios de habitaciones asociados</li>
+                </ul>
+                <p className="mt-2">Por seguridad, esta acción solo elimina el edificio del catálogo disponible. No borra reservas ni incidencias históricas.</p>
+              </div>
+            )}
+            {areaDeleteCandidate.hasData && (
+              <Field label="Confirmación obligatoria">
+                <input className={inputStyle} value={areaDeleteCandidate.confirmText || ""} onChange={(e) => setAreaDeleteCandidate({ ...areaDeleteCandidate, confirmText: e.target.value })} placeholder="Escribe BORRAR para confirmar" />
+              </Field>
+            )}
+            <p className="text-sm text-slate-600">Después de borrar, pulsa <b>Guardar catálogo</b> para sincronizar el cambio.</p>
+          </div>
         </Modal>
       )}
 
