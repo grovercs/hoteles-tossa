@@ -4385,7 +4385,7 @@ export default function HotelDailyControlApp() {
           <span>Hotel Daily Control · Sistema interno de gestión operativa</span>
           <a href="https://vielhacomputer.com" target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 font-semibold text-slate-500 transition hover:text-[#2f5f7a]">
             <span>Desarrollado por</span>
-            <img src="/vielha-computer-logo.gif" alt="Vielha Computer" className="h-7 w-auto max-w-[150px] object-contain opacity-80 grayscale transition hover:opacity-100 hover:grayscale-0" onError={(event) => { event.currentTarget.style.display = "none"; }} />
+            <img src="/vielha-computer-logo.png" alt="Vielha Computer" className="h-7 w-auto max-w-[150px] object-contain opacity-80 grayscale transition hover:opacity-100 hover:grayscale-0" onError={(event) => { event.currentTarget.style.display = "none"; }} />
             <span>Vielha Computer</span>
           </a>
         </div>
