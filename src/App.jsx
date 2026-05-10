@@ -240,6 +240,21 @@ function addDaysIso(dateValue, days) {
   return toLocalIsoDate(date);
 }
 
+function startOfWeekIso(dateValue) {
+  const [year, month, day] = String(dateValue || todayIso()).split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  const dayOfWeek = date.getDay();
+  const diffToMonday = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  date.setDate(date.getDate() + diffToMonday);
+  return toLocalIsoDate(date);
+}
+
+function formatWeekdayShort(dateValue) {
+  const [year, month, day] = String(dateValue).split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return date.toLocaleDateString("es-ES", { weekday: "short" }).replace(".", "");
+}
+
 function formatDateEs(dateValue) {
   if (!dateValue) return "-";
   const [year, month, day] = String(dateValue).slice(0, 10).split("-");
@@ -365,6 +380,31 @@ function writeAuthSession(session) {
   }
 }
 
+async function refreshAuthSession() {
+  if (!HAS_SUPABASE) return null;
+  const currentSession = readAuthSession();
+  const refreshToken = currentSession?.refresh_token;
+  if (!refreshToken) return null;
+
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_KEY,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+
+  if (!response.ok) {
+    writeAuthSession(null);
+    return null;
+  }
+
+  const refreshedSession = await response.json();
+  writeAuthSession(refreshedSession);
+  return refreshedSession;
+}
+
 function readLocal() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -372,6 +412,10 @@ function readLocal() {
   } catch {
     return null;
   }
+}
+
+function canUseRemote(connection, hotel, authSession) {
+  return HAS_SUPABASE && Boolean(authSession?.access_token) && hotel?.id && hotel.id !== DEMO_HOTEL_ID;
 }
 
 function writeLocal(data) {
@@ -385,19 +429,32 @@ function writeLocal(data) {
 async function sb(path, options = {}) {
   if (!HAS_SUPABASE) throw new Error("El sistema de sincronización no está configurado");
 
+  const { retryAuth = true, ...fetchOptions } = options;
+  const session = readAuthSession();
+
   const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    ...options,
+    ...fetchOptions,
     headers: {
       apikey: SUPABASE_KEY,
-      Authorization: `Bearer ${readAuthSession()?.access_token || SUPABASE_KEY}`,
+      Authorization: `Bearer ${session?.access_token || SUPABASE_KEY}`,
       "Content-Type": "application/json",
       Prefer: "return=representation",
-      ...(options.headers || {}),
+      ...(fetchOptions.headers || {}),
     },
   });
 
   if (!response.ok) {
     const text = await response.text();
+    const isExpiredJwt = response.status === 401 || text.includes("JWT expired") || text.includes("PGRST303");
+
+    if (retryAuth && isExpiredJwt) {
+      const refreshedSession = await refreshAuthSession();
+      if (refreshedSession?.access_token) {
+        return sb(path, { ...fetchOptions, retryAuth: false });
+      }
+      throw new Error("Sesión caducada. Vuelve a iniciar sesión para sincronizar con Supabase.");
+    }
+
     throw new Error(text || `Error de sincronización ${response.status}`);
   }
 
@@ -665,6 +722,14 @@ function normalizeRoomCatalog(catalog) {
     });
 }
 
+function reindexRoomCatalog(catalog) {
+  return normalizeRoomCatalog(catalog).map((room, index) => ({
+    ...room,
+    label: `${room.area} · ${room.number}`,
+    sortOrder: index + 1,
+  }));
+}
+
 function reservationFromRow(row) {
   return {
     id: row.id,
@@ -712,12 +777,50 @@ function calculateAvailable(rooms) {
   return Math.max((Number(rooms.total) || 0) - (Number(rooms.occupied) || 0) - (Number(rooms.blocked) || 0), 0);
 }
 
+function normalizeChecklistTemplate(template = defaultTasks) {
+  const seen = new Set();
+  const base = Array.isArray(template) && template.length ? template : defaultTasks;
+  const cleaned = [];
+
+  [...base, ...defaultTasks].forEach((task, index) => {
+    const area = task?.area || "Apertura";
+    const title = String(task?.title || "").trim();
+    if (!title) return;
+    const key = `${area}::${title}`.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    cleaned.push({
+      id: task?.id || `template-${index}`,
+      area,
+      title,
+      done: false,
+    });
+  });
+
+  return cleaned;
+}
+
 function emptyDefaultTasks(template = defaultTasks) {
-  return template.map((task, index) => ({
+  return normalizeChecklistTemplate(template).map((task, index) => ({
     ...task,
     id: task.id || `task-${index}-${Date.now()}`,
     done: false,
   }));
+}
+
+function mergeTasksWithTemplate(existingTasks = [], template = defaultTasks) {
+  const normalizedTemplate = normalizeChecklistTemplate(template);
+  const existingByKey = new Map((existingTasks || []).map((task) => [`${task.area || "Apertura"}::${String(task.title || "").trim()}`.toLowerCase(), task]));
+
+  return normalizedTemplate.map((templateTask, index) => {
+    const key = `${templateTask.area}::${templateTask.title}`.toLowerCase();
+    const existing = existingByKey.get(key);
+    return {
+      ...templateTask,
+      id: existing?.id || templateTask.id || `task-${index}-${Date.now()}`,
+      done: Boolean(existing?.done),
+    };
+  });
 }
 
 function summarizeRoomDetails(details) {
@@ -1096,14 +1199,20 @@ function cleanChecklistNotes(notes) {
   const firstLine = lines[0] || "";
 
   if (firstLine.startsWith("[AREA:") && firstLine.endsWith("]")) {
-    return lines.slice(1).join(newline);
+    return lines.slice(1).join(newline).trim();
   }
 
-  return rawNotes;
+  return rawNotes.trim();
 }
 
 function encodeChecklistNotes(area, notes) {
   return `[AREA:${area || "General"}]${String.fromCharCode(10)}${notes || ""}`;
+}
+
+function isWeakChecklistNote(notes) {
+  const clean = cleanChecklistNotes(notes).toLowerCase().trim();
+  if (!clean) return false;
+  return clean.length < 18 || ["prueba", "test", "ok", "todo ok", "sin novedad"].includes(clean);
 }
 
 function findChecklistSignoffFor(dateValue, area, history) {
@@ -1111,7 +1220,8 @@ function findChecklistSignoffFor(dateValue, area, history) {
 }
 
 function firstAvailableChecklistArea(options, dateValue, history) {
-  return (options || []).find((area) => !findChecklistSignoffFor(dateValue, area, history)) || (options || ["General"])[0] || "General";
+  const realAreas = (options || []).filter((area) => area && area !== "General");
+  return realAreas.find((area) => !findChecklistSignoffFor(dateValue, area, history)) || realAreas[0] || "General";
 }
 
 function buildChecklistText({ hotel, checklist }) {
@@ -1126,7 +1236,7 @@ Progreso: ${checklist.completed_count}/${checklist.total_count}
 Creado: ${formatDateTimeEs(checklist.created_at)}
 
 OBSERVACIONES
-${cleanChecklistNotes(checklist.notes) || "Sin observaciones."}`;
+${cleanChecklistNotes(checklist.notes) || "Sin observaciones relevantes registradas para este cierre."}`;
 }
 
 function buildIncidentText({ hotel, incident }) {
@@ -1304,6 +1414,26 @@ function Modal({ title, subtitle, children, onClose, footer }) {
   );
 }
 
+function useResponsivePlanningDays() {
+  const getDays = () => {
+    if (typeof window === "undefined") return 15;
+    const width = window.innerWidth;
+    if (width < 640) return 7;
+    if (width < 1024) return 10;
+    return 15;
+  };
+
+  const [days, setDays] = useState(getDays);
+
+  useEffect(() => {
+    const onResize = () => setDays(getDays());
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  return days;
+}
+
 const inputStyle = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm outline-none transition placeholder:text-slate-400 hover:border-slate-400 focus:border-sky-700 focus:ring-4 focus:ring-sky-100";
 const buttonDark = "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#2f5f7a] px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-[#254b62] active:scale-[0.99] sm:px-5";
 const buttonLight = "inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm transition hover:border-slate-400 hover:bg-slate-50 active:scale-[0.99] sm:px-5";
@@ -1327,8 +1457,8 @@ export default function HotelDailyControlApp() {
   const [roomDetails, setRoomDetails] = useState(stored?.roomDetailsByDate?.[stored?.roomDate || todayIso()] || stored?.roomDetails || buildRoomInventory(stored?.rooms || defaultRooms, stored?.roomCatalog || defaultRoomCatalog));
   const [reports, setReports] = useState(stored?.reports || defaultReports);
   const [incidents, setIncidents] = useState(stored?.incidents || defaultIncidents);
-  const [checklistTemplate, setChecklistTemplate] = useState(stored?.checklistTemplate || defaultTasks);
-  const [tasks, setTasks] = useState(stored?.tasks || emptyDefaultTasks(stored?.checklistTemplate || defaultTasks));
+  const [checklistTemplate, setChecklistTemplate] = useState(normalizeChecklistTemplate(stored?.checklistTemplate || defaultTasks));
+  const [tasks, setTasks] = useState(mergeTasksWithTemplate(stored?.tasks || [], stored?.checklistTemplate || defaultTasks));
   const [channels, setChannels] = useState(stored?.channels || defaultChannels);
   const [reservations, setReservations] = useState(stored?.reservations || defaultReservations);
   const [copied, setCopied] = useState(false);
@@ -1377,7 +1507,7 @@ export default function HotelDailyControlApp() {
   const [checklistArea, setChecklistArea] = useState("General");
   const [checklistNotes, setChecklistNotes] = useState("");
   const [checklistSignoff, setChecklistSignoff] = useState(null);
-  const [checklistHistory, setChecklistHistory] = useState([]);
+  const [checklistHistory, setChecklistHistory] = useState(stored?.checklistHistory || []);
   const [viewingChecklist, setViewingChecklist] = useState(null);
   const [editingChecklistId, setEditingChecklistId] = useState(null);
   const [deleteChecklistCandidate, setDeleteChecklistCandidate] = useState(null);
@@ -1388,14 +1518,18 @@ export default function HotelDailyControlApp() {
   const [quickRoomStatus, setQuickRoomStatus] = useState("Disponible");
   const [roomStatusModal, setRoomStatusModal] = useState(null);
   const [hasUnsavedRoomChanges, setHasUnsavedRoomChanges] = useState(false);
-  const [calendarStartDate, setCalendarStartDate] = useState(todayIso());
+  const [calendarStartDate, setCalendarStartDate] = useState(startOfWeekIso(todayIso()));
   const [reservationForm, setReservationForm] = useState({ roomLabel: "", guestName: "", channel: "", checkinDate: todayIso(), checkoutDate: addDaysIso(todayIso(), 1), nightlyRate: 0, totalAmount: 0, reference: "", phone: "", email: "", status: "Confirmada", notes: "" });
   const [reservationModal, setReservationModal] = useState(null);
   const [calendarFullscreen, setCalendarFullscreen] = useState(false);
   const [resetRoomsCandidate, setResetRoomsCandidate] = useState(false);
   const [areaRenameCandidate, setAreaRenameCandidate] = useState(null);
   const [areaDeleteCandidate, setAreaDeleteCandidate] = useState(null);
+  const [hasUnsavedCatalogChanges, setHasUnsavedCatalogChanges] = useState(false);
+  const [catalogSaveReminder, setCatalogSaveReminder] = useState(null);
   const [reservationConflictCandidate, setReservationConflictCandidate] = useState(null);
+  const [showChecklistHistory, setShowChecklistHistory] = useState(false);
+  const planningDays = useResponsivePlanningDays();
 
   useEffect(() => {
     async function loadSupabase() {
@@ -1418,15 +1552,14 @@ export default function HotelDailyControlApp() {
         setHotel(normalizedHotel);
         setForm((old) => ({ ...old, shift: normalizedHotel.receptionHours || old.shift }));
 
-        const [remoteReports, remoteIncidents, remoteRooms, remoteTasks, remoteSignoffs, remoteChannels, remoteReservations, remoteRoomCatalog] = await Promise.all([
+        const [remoteReports, remoteIncidents, remoteRooms, remoteSignoffs, remoteChannels, remoteReservations, remoteRoomCatalog] = await Promise.all([
           sb(`daily_reports?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=50`),
           sb(`incidents?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=100`),
           sb(`room_status?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=1`),
-          sb(`daily_tasks?select=*&hotel_id=eq.${normalizedHotel.id}&task_date=eq.${todayIso()}&order=created_at.asc`),
           sb(`checklist_signoffs?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=30`),
           sb(`sales_channels?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.asc`),
           sb(`reservations?select=*&hotel_id=eq.${normalizedHotel.id}&order=checkin_date.asc,created_at.asc&limit=300`),
-          sb(`room_catalog?select=*&hotel_id=eq.${normalizedHotel.id}&is_active=eq.true&order=area.asc,sort_order.asc,room_number.asc`),
+          sb(`room_catalog?select=*&hotel_id=eq.${normalizedHotel.id}&is_active=eq.true&order=sort_order.asc,room_number.asc`),
         ]);
 
         setReports(remoteReports?.length ? remoteReports.map(reportFromRow) : []);
@@ -1437,22 +1570,15 @@ export default function HotelDailyControlApp() {
           setRoomDetails(buildRoomInventory(loadedRooms, roomCatalog));
         }
 
-        if (remoteTasks?.length) {
-          setTasks(remoteTasks.map(taskFromRow));
-        } else {
-          const insertedTasks = await sb("daily_tasks?select=*", { method: "POST", body: JSON.stringify(emptyDefaultTasks(checklistTemplate).map((task) => taskToRow(task, normalizedHotel.id, todayIso()))) });
-          setTasks(insertedTasks?.length ? insertedTasks.map(taskFromRow) : emptyDefaultTasks(checklistTemplate));
-        }
+        setTasks(emptyDefaultTasks(checklistTemplate));
 
-        if (remoteSignoffs?.length) {
-          setChecklistHistory(remoteSignoffs);
-          const todaySignoff = remoteSignoffs.find((item) => item.signoff_date === todayIso());
-          setChecklistSignoff(todaySignoff || null);
-          if (todaySignoff) {
-            setChecklistResponsible(todaySignoff.responsible || "");
-            setChecklistNotes(todaySignoff.notes || "");
-          }
-        }
+        const loadedSignoffs = remoteSignoffs || [];
+        setChecklistHistory(loadedSignoffs);
+        setChecklistDate(todayIso());
+        setChecklistSignoff(null);
+        setEditingChecklistId(null);
+        setChecklistResponsible("");
+        setChecklistNotes("");
 
         if (remoteChannels?.length) {
           setChannels(remoteChannels.map(channelFromRow));
@@ -1468,19 +1594,27 @@ export default function HotelDailyControlApp() {
         }
 
         if (remoteRoomCatalog?.length) {
-          const catalogFromDb = normalizeRoomCatalog(remoteRoomCatalog.map(roomCatalogFromRow));
+          const catalogFromDb = reindexRoomCatalog(remoteRoomCatalog.map(roomCatalogFromRow));
           setRoomCatalog(catalogFromDb);
+          setRoomCatalogText(formatRoomCatalog(catalogFromDb));
+          const todaySignoffs = loadedSignoffs.filter((item) => item.signoff_date === todayIso());
+          const realAreas = Object.keys(groupRoomsByArea(catalogFromDb)).filter((area) => area && area !== "General");
+          setChecklistArea(firstAvailableChecklistArea(realAreas, todayIso(), todaySignoffs));
         } else {
-          const seedCatalog = normalizeRoomCatalog(roomCatalog);
+          const seedCatalog = reindexRoomCatalog(roomCatalog);
           if (seedCatalog.length) {
             await sb("room_catalog", { method: "POST", body: JSON.stringify(seedCatalog.map((room, index) => roomCatalogToRow(room, normalizedHotel.id, index))) });
             setRoomCatalog(seedCatalog);
+            setRoomCatalogText(formatRoomCatalog(seedCatalog));
+            const todaySignoffs = loadedSignoffs.filter((item) => item.signoff_date === todayIso());
+            const realAreas = Object.keys(groupRoomsByArea(seedCatalog)).filter((area) => area && area !== "General");
+            setChecklistArea(firstAvailableChecklistArea(realAreas, todayIso(), todaySignoffs));
           }
         }
         setConnection({ status: "online", message: "Sistema sincronizado" });
       } catch (error) {
         console.error(error);
-        setConnection({ status: "error", message: "Trabajando en modo seguro local" });
+        setConnection({ status: "error", message: `Trabajando en modo seguro local: ${error?.message || "error de sincronización"}` });
       }
     }
 
@@ -1488,8 +1622,8 @@ export default function HotelDailyControlApp() {
   }, [authSession?.access_token]);
 
   useEffect(() => {
-    writeLocal({ hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, channels, reservations });
-  }, [hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, channels, reservations]);
+    writeLocal({ hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, checklistHistory, channels, reservations });
+  }, [hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, checklistHistory, channels, reservations]);
 
   const latest = reports[0] || defaultReports[0];
   const roomInventory = useMemo(() => {
@@ -1572,15 +1706,15 @@ export default function HotelDailyControlApp() {
   }, [groupedRooms, incidentArea]);
   const buildingChecklistAreaOptions = useMemo(() => Object.keys(groupedRooms), [groupedRooms]);
   const checklistAreaOptions = useMemo(() => ["General", ...buildingChecklistAreaOptions], [buildingChecklistAreaOptions]);
+  const checklistSignoffsForDate = useMemo(() => checklistHistory.filter((item) => item.signoff_date === checklistDate), [checklistHistory, checklistDate]);
   const groupedChecklistHistory = useMemo(() => {
-    return checklistHistory.reduce((groups, item) => {
+    return checklistSignoffsForDate.reduce((groups, item) => {
       const area = getChecklistArea(item);
       if (!groups[area]) groups[area] = [];
       groups[area].push(item);
       return groups;
     }, {});
-  }, [checklistHistory]);
-  const checklistSignoffsForDate = useMemo(() => checklistHistory.filter((item) => item.signoff_date === checklistDate), [checklistHistory, checklistDate]);
+  }, [checklistSignoffsForDate]);
   const checklistAreasCreatedForDate = useMemo(() => checklistSignoffsForDate.map((item) => getChecklistArea(item)), [checklistSignoffsForDate]);
   const selectedChecklistExisting = useMemo(() => findChecklistSignoffFor(checklistDate, checklistArea, checklistHistory), [checklistDate, checklistArea, checklistHistory]);
   const buildingChecklistAreasCreatedForDate = buildingChecklistAreaOptions.filter((area) => checklistAreasCreatedForDate.includes(area));
@@ -1603,7 +1737,9 @@ export default function HotelDailyControlApp() {
   const dashboardRevenue = liveBookingSummary.occupiedCount ? liveBookingSummary.totalRevenue : Number(latest?.revenue || 0);
   const dashboardNewBookings = liveBookingSummary.occupiedCount ? liveBookingSummary.occupiedCount : Number(latest?.newBookings || 0);
   const reportText = useMemo(() => buildReportText({ hotel, latest, rooms, occupancy, available, openIncidents, recommendations, roomAreaSummaries }), [hotel, latest, rooms, occupancy, available, openIncidents, recommendations, roomAreaSummaries]);
-  const calendarDays = useMemo(() => Array.from({ length: 10 }, (_, index) => addDaysIso(calendarStartDate, index)), [calendarStartDate]);
+  const calendarDays = useMemo(() => Array.from({ length: planningDays }, (_, index) => addDaysIso(startOfWeekIso(calendarStartDate), index)), [calendarStartDate, planningDays]);
+  const calendarWeekStart = calendarDays[0];
+  const calendarWeekEnd = calendarDays[calendarDays.length - 1];
   const reservationConflicts = useMemo(() => {
     return reservations.filter((reservation, index) => reservations.some((other, otherIndex) => otherIndex !== index && reservationsOverlap(reservation, other)));
   }, [reservations]);
@@ -2038,20 +2174,12 @@ export default function HotelDailyControlApp() {
 
   async function updateTaskDone(id, done) {
     if (checklistSignoff && !editingChecklistId) {
-      setLastAction("Checklist cerrado. Pulsa Editar en el histórico para corregir este checklist.");
+      setLastAction("Checklist cerrado. Pulsa Editar en el cierre correspondiente si necesitas corregirlo.");
       return;
     }
 
     setTasks(tasks.map((x) => (x.id === id ? { ...x, done } : x)));
-    try {
-      if (connection.status === "online" && !String(id).startsWith("open-") && !String(id).startsWith("shift-") && !String(id).startsWith("close-")) {
-        await sb(`daily_tasks?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ done }) });
-        setLastAction(done ? "Tarea marcada como completada" : "Tarea marcada como pendiente");
-      }
-    } catch (error) {
-      console.error(error);
-      setConnection({ status: "error", message: "No se pudo sincronizar el checklist." });
-    }
+    setLastAction(done ? "Tarea marcada como completada" : "Tarea marcada como pendiente");
   }
 
   async function loadChecklistForDate(dateValue) {
@@ -2061,43 +2189,28 @@ export default function HotelDailyControlApp() {
     setChecklistNotes("");
 
     try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        const [remoteTasks, remoteSignoffs] = await Promise.all([
-          sb(`daily_tasks?select=*&hotel_id=eq.${hotel.id}&task_date=eq.${dateValue}&order=created_at.asc`),
-          sb(`checklist_signoffs?select=*&hotel_id=eq.${hotel.id}&signoff_date=eq.${dateValue}&order=created_at.desc`),
-        ]);
-
-        if (remoteTasks?.length) {
-          setTasks(remoteTasks.map(taskFromRow));
-        } else {
-          const insertedTasks = await sb("daily_tasks?select=*", { method: "POST", body: JSON.stringify(emptyDefaultTasks(checklistTemplate).map((task) => taskToRow(task, hotel.id, dateValue))) });
-          setTasks(insertedTasks?.length ? insertedTasks.map(taskFromRow) : emptyDefaultTasks(checklistTemplate));
-        }
+      if (canUseRemote(connection, hotel, authSession)) {
+        const remoteSignoffs = await sb(`checklist_signoffs?select=*&hotel_id=eq.${hotel.id}&signoff_date=eq.${dateValue}&order=created_at.desc`);
 
         const daySignoffs = remoteSignoffs || [];
         setChecklistHistory((current) => [...daySignoffs, ...current.filter((item) => item.signoff_date !== dateValue)]);
-        const nextArea = firstAvailableChecklistArea(checklistAreaOptions, dateValue, daySignoffs);
-        const signoff = findChecklistSignoffFor(dateValue, nextArea, daySignoffs);
+        const nextArea = firstAvailableChecklistArea(buildingChecklistAreaOptions, dateValue, daySignoffs);
         setChecklistArea(nextArea);
-        setChecklistSignoff(signoff);
-        if (signoff) {
-          setChecklistResponsible(signoff.responsible || "");
-          setChecklistNotes(cleanChecklistNotes(signoff.notes));
-          setLastAction(`Todos o varios checklists ya existen para ${formatDateEs(dateValue)}. Puedes editar el cierre de ${nextArea}.`);
-        } else {
-          setLastAction(`Checklist abierto para ${formatDateEs(dateValue)} · ${nextArea}`);
-        }
-      } else {
-        const nextArea = firstAvailableChecklistArea(checklistAreaOptions, dateValue, checklistHistory);
-        const signoff = findChecklistSignoffFor(dateValue, nextArea, checklistHistory);
-        setChecklistArea(nextArea);
-        setChecklistSignoff(signoff);
+        setChecklistSignoff(null);
+        setEditingChecklistId(null);
+        setChecklistResponsible("");
+        setChecklistNotes("");
         setTasks(emptyDefaultTasks(checklistTemplate));
-        if (signoff) {
-          setChecklistResponsible(signoff.responsible || "");
-          setChecklistNotes(cleanChecklistNotes(signoff.notes));
-        }
-        setLastAction(`Checklist local cargado para ${formatDateEs(dateValue)} · ${nextArea}`);
+        setLastAction(`Checklist nuevo preparado para ${formatDateEs(dateValue)} · ${nextArea}. Para corregir uno ya cerrado, pulsa Editar en su tarjeta.`);
+      } else {
+        const nextArea = firstAvailableChecklistArea(buildingChecklistAreaOptions, dateValue, checklistHistory);
+        setChecklistArea(nextArea);
+        setChecklistSignoff(null);
+        setEditingChecklistId(null);
+        setChecklistResponsible("");
+        setChecklistNotes("");
+        setTasks(emptyDefaultTasks(checklistTemplate));
+        setLastAction(`Checklist local nuevo preparado para ${formatDateEs(dateValue)} · ${nextArea}`);
       }
     } catch (error) {
       console.error(error);
@@ -2106,31 +2219,16 @@ export default function HotelDailyControlApp() {
   }
 
   async function createBlankChecklistForDate(dateValue) {
-    const nextArea = firstAvailableChecklistArea(checklistAreaOptions, dateValue, checklistHistory);
-    const existingForArea = findChecklistSignoffFor(dateValue, nextArea, checklistHistory);
+    const daySignoffs = checklistHistory.filter((item) => item.signoff_date === dateValue);
+    const nextArea = firstAvailableChecklistArea(buildingChecklistAreaOptions, dateValue, daySignoffs);
     setChecklistDate(dateValue);
-    setChecklistSignoff(existingForArea);
+    setChecklistSignoff(null);
     setEditingChecklistId(null);
-    setChecklistResponsible(existingForArea?.responsible || "");
+    setChecklistResponsible("");
     setChecklistArea(nextArea);
-    setChecklistNotes(existingForArea ? cleanChecklistNotes(existingForArea.notes) : "");
+    setChecklistNotes("");
     setTasks(emptyDefaultTasks(checklistTemplate));
-
-    try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        const existing = await sb(`daily_tasks?select=*&hotel_id=eq.${hotel.id}&task_date=eq.${dateValue}&order=created_at.asc`);
-        if (!existing?.length) {
-          const insertedTasks = await sb("daily_tasks?select=*", { method: "POST", body: JSON.stringify(emptyDefaultTasks(checklistTemplate).map((task) => taskToRow(task, hotel.id, dateValue))) });
-          setTasks(insertedTasks?.length ? insertedTasks.map(taskFromRow) : emptyDefaultTasks(checklistTemplate));
-        } else {
-          setTasks(existing.map(taskFromRow).map((task) => ({ ...task, done: false })));
-        }
-      }
-      setLastAction(existingForArea ? `Ya existe checklist para ${formatDateEs(dateValue)} · ${nextArea}. Puedes editarlo desde el histórico.` : `Nuevo checklist abierto para ${formatDateEs(dateValue)} · ${nextArea}`);
-    } catch (error) {
-      console.error(error);
-      setLastAction(`Nuevo checklist local abierto para ${formatDateEs(dateValue)}`);
-    }
+    setLastAction(`Nuevo checklist en blanco para ${formatDateEs(dateValue)} · ${nextArea}.`);
   }
 
   function createNextChecklist() {
@@ -2173,19 +2271,25 @@ export default function HotelDailyControlApp() {
     };
 
     try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+      if (canUseRemote(connection, hotel, authSession)) {
         if (checklistSignoff?.id) {
           const updated = await sb(`checklist_signoffs?id=eq.${checklistSignoff.id}&select=*`, { method: "PATCH", body: JSON.stringify(payload) });
-          const saved = updated?.[0] || checklistSignoff;
+          if (!updated?.[0]?.id) {
+            throw new Error("Supabase no devolvió el cierre actualizado. Revisa permisos RLS de checklist_signoffs.");
+          }
+          const saved = updated[0];
           setChecklistSignoff(saved);
           setChecklistHistory(checklistHistory.map((item) => item.id === saved.id ? saved : item));
           setLastAction(`Cierre de checklist actualizado: ${formatDateEs(saved.signoff_date)}`);
         } else {
           const inserted = await sb("checklist_signoffs?select=*", { method: "POST", body: JSON.stringify(payload) });
-          const saved = inserted?.[0] || payload;
+          if (!inserted?.[0]?.id) {
+            throw new Error("Supabase no devolvió el cierre guardado. Revisa permisos RLS de checklist_signoffs.");
+          }
+          const saved = inserted[0];
           setChecklistSignoff(saved);
-          setChecklistHistory([saved, ...checklistHistory]);
-          setLastAction(hasPending ? "Checklist cerrado con tareas pendientes" : "Checklist aceptado como correcto");
+          setChecklistHistory([saved, ...checklistHistory.filter((item) => item.id !== saved.id)]);
+          setLastAction(hasPending ? "Checklist cerrado con tareas pendientes y sincronizado" : "Checklist aceptado como correcto y sincronizado");
         }
 
         const history = await sb(`checklist_signoffs?select=*&hotel_id=eq.${hotel.id}&order=created_at.desc&limit=30`);
@@ -2225,9 +2329,10 @@ export default function HotelDailyControlApp() {
     setLastAction(`Editando cierre de checklist del ${formatDateEs(item.signoff_date)}`);
 
     try {
-      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
-        const remoteTasks = await sb(`daily_tasks?select=*&hotel_id=eq.${hotel.id}&task_date=eq.${item.signoff_date}&order=created_at.asc`);
-        if (remoteTasks?.length) setTasks(remoteTasks.map(taskFromRow));
+      if (canUseRemote(connection, hotel, authSession)) {
+        setTasks(emptyDefaultTasks(checklistTemplate).map((task, index) => ({ ...task, done: index < Number(item.completed_count || 0) })));
+      } else {
+        setTasks(emptyDefaultTasks(checklistTemplate).map((task, index) => ({ ...task, done: index < Number(item.completed_count || 0) })));
       }
     } catch (error) {
       console.error(error);
@@ -2720,7 +2825,7 @@ export default function HotelDailyControlApp() {
   }
 
   async function saveRoomCatalogToSupabase() {
-    const normalizedCatalog = normalizeRoomCatalog(roomCatalog);
+    const normalizedCatalog = reindexRoomCatalog(roomCatalog);
     if (!normalizedCatalog.length) {
       setLastAction("No hay habitaciones en el catálogo para guardar.");
       return;
@@ -2732,10 +2837,14 @@ export default function HotelDailyControlApp() {
         await sb("room_catalog", { method: "POST", body: JSON.stringify(normalizedCatalog.map((room, index) => roomCatalogToRow(room, hotel.id, index))) });
         setRoomCatalog(normalizedCatalog);
         setRoomDetails((current) => alignRoomDetailsToCatalog(normalizedCatalog, current));
+        setHasUnsavedCatalogChanges(false);
+        setCatalogSaveReminder(null);
         setLastAction("Catálogo de edificios y habitaciones guardado correctamente.");
       } else {
         setRoomCatalog(normalizedCatalog);
         setRoomDetails((current) => alignRoomDetailsToCatalog(normalizedCatalog, current));
+        setHasUnsavedCatalogChanges(false);
+        setCatalogSaveReminder(null);
         setLastAction("Catálogo guardado en modo seguro local.");
       }
     } catch (error) {
@@ -2756,7 +2865,7 @@ export default function HotelDailyControlApp() {
       return;
     }
 
-    setRoomCatalog((current) => normalizeRoomCatalog(current.map((room) => {
+    setRoomCatalog((current) => reindexRoomCatalog(current.map((room) => {
       if (room.area !== oldArea) return room;
       return { ...room, area: cleanName, label: `${cleanName} · ${room.number}` };
     })));
@@ -2772,6 +2881,8 @@ export default function HotelDailyControlApp() {
       return next;
     });
     setAreaRenameCandidate(null);
+    setHasUnsavedCatalogChanges(true);
+    setCatalogSaveReminder({ title: "Edificio renombrado", text: `Has renombrado ${oldArea} como ${cleanName}. Para que se vea igual en todos los equipos, guarda el catálogo.` });
     setLastAction(`Edificio renombrado: ${oldArea} → ${cleanName}. Pulsa Guardar catálogo para conservar el cambio.`);
   }
 
@@ -2801,8 +2912,9 @@ export default function HotelDailyControlApp() {
       setLastAction("Para borrar un edificio con datos asociados escribe BORRAR en la confirmación.");
       return;
     }
-    const nextCatalog = normalizeRoomCatalog(roomCatalog.filter((room) => room.area !== area));
+    const nextCatalog = reindexRoomCatalog(roomCatalog.filter((room) => room.area !== area));
     setRoomCatalog(nextCatalog);
+    setRoomCatalogText(formatRoomCatalog(nextCatalog));
     setRoomDetails((current) => current.filter((room) => room.area !== area));
     setRoomDetailsByDate((current) => {
       const next = {};
@@ -2813,7 +2925,31 @@ export default function HotelDailyControlApp() {
     });
     setRooms(summarizeRoomDetails(nextCatalog.map((room) => ({ ...room, status: "Disponible" }))));
     setAreaDeleteCandidate(null);
+    setHasUnsavedCatalogChanges(true);
+    setCatalogSaveReminder({ title: "Edificio eliminado", text: `Has eliminado ${area} del catálogo visible. Las reservas e incidencias históricas no se han borrado. Guarda el catálogo para sincronizarlo.` });
     setLastAction(`Edificio eliminado del catálogo: ${area}. Las reservas e incidencias históricas no se han borrado. Pulsa Guardar catálogo para conservar el cambio.`);
+  }
+
+  function moveCatalogArea(area, direction) {
+    const grouped = Object.entries(groupRoomsByArea(roomCatalog));
+    const currentIndex = grouped.findIndex(([name]) => name === area);
+    if (currentIndex < 0) return;
+    const targetIndex = currentIndex + direction;
+    if (targetIndex < 0 || targetIndex >= grouped.length) return;
+
+    const nextGroups = [...grouped];
+    const [moved] = nextGroups.splice(currentIndex, 1);
+    nextGroups.splice(targetIndex, 0, moved);
+
+    const nextCatalog = reindexRoomCatalog(nextGroups.flatMap(([, areaRooms]) => areaRooms));
+    const alignedDetails = alignRoomDetailsToCatalog(nextCatalog, roomDetails);
+    setRoomCatalog(nextCatalog);
+    setRoomCatalogText(formatRoomCatalog(nextCatalog));
+    setRoomDetails(alignedDetails);
+    setRoomDetailsByDate((current) => ({ ...current, [roomDate]: alignedDetails }));
+    setHasUnsavedCatalogChanges(true);
+    setCatalogSaveReminder({ title: "Orden de edificios cambiado", text: `Has movido ${area}. Guarda el catálogo para que el orden se mantenga al refrescar y en todos los equipos.` });
+    setLastAction(`Orden actualizado: ${area}. Pulsa Guardar catálogo para conservar el cambio.`);
   }
 
   async function saveChannels() {
@@ -2966,36 +3102,39 @@ export default function HotelDailyControlApp() {
   }
 
   function updateChecklistTemplate(index, key, value) {
-    setChecklistTemplate(checklistTemplate.map((task, i) => (i === index ? { ...task, [key]: value } : task)));
+    setChecklistTemplate(normalizeChecklistTemplate(checklistTemplate.map((task, i) => (i === index ? { ...task, [key]: value } : task))));
   }
 
   function addChecklistTemplateTask() {
-    setChecklistTemplate([
+    setChecklistTemplate(normalizeChecklistTemplate([
       ...checklistTemplate,
       { id: `template-${Date.now()}`, area: "Apertura", title: "Nueva tarea del checklist", done: false },
-    ]);
+    ]));
     setLastAction("Nueva tarea añadida a la plantilla del checklist. Puedes editarla y se usará en nuevos checklists.");
   }
 
   function deleteChecklistTemplateTask(index) {
-    setChecklistTemplate(checklistTemplate.filter((_, i) => i !== index));
+    setChecklistTemplate(normalizeChecklistTemplate(checklistTemplate.filter((_, i) => i !== index)));
     setLastAction("Tarea eliminada de la plantilla del checklist. No afecta a cierres ya guardados.");
   }
 
   function resetChecklistTemplate() {
-    setChecklistTemplate(defaultTasks);
+    setChecklistTemplate(normalizeChecklistTemplate(defaultTasks));
     setLastAction("Plantilla del checklist restaurada a la versión base de 16 tareas.");
   }
 
   function applyRoomCatalogText() {
-    const parsedCatalog = parseRoomCatalog(roomCatalogText);
+    const parsedCatalog = reindexRoomCatalog(parseRoomCatalog(roomCatalogText));
     const alignedDetails = alignRoomDetailsToCatalog(parsedCatalog, roomDetails);
     const summarizedRooms = summarizeRoomDetails(alignedDetails);
     setRoomCatalog(parsedCatalog);
     setRoomDetails(alignedDetails);
     setRooms(summarizedRooms);
     setRoomDetailsByDate((current) => ({ ...current, [roomDate]: alignedDetails }));
-    setLastAction(`Catálogo de habitaciones actualizado: ${parsedCatalog.length} habitaciones configuradas. Ya puedes verlo en Habitaciones.`);
+    setRoomCatalogText(formatRoomCatalog(parsedCatalog));
+    setHasUnsavedCatalogChanges(true);
+    setCatalogSaveReminder({ title: "Catálogo aplicado", text: "Has aplicado cambios desde el texto del catálogo. Guarda el catálogo para sincronizarlo con todos los equipos." });
+    setLastAction(`Catálogo de habitaciones actualizado: ${parsedCatalog.length} habitaciones configuradas. Pulsa Guardar catálogo para conservar el cambio.`);
   }
 
   function resetRoomCatalogFromCurrent() {
@@ -3005,22 +3144,40 @@ export default function HotelDailyControlApp() {
   }
 
   function addRoomAreaToCatalog() {
-    const area = (newRoomArea || "Edificio principal").trim();
+    const area = (newRoomArea || "Nuevo edificio").trim();
     const start = Number(newRoomStart) || 1;
     const count = Math.max(Number(newRoomCount) || 1, 1);
-    const generated = Array.from({ length: count }, (_, index) => `${area};${start + index}`);
-    const newline = String.fromCharCode(10);
+    const existingKeys = new Set(roomCatalog.map((room) => `${room.area}::${room.number}`));
+    const generatedRooms = Array.from({ length: count }, (_, index) => {
+      const number = String(start + index);
+      return {
+        id: `${area}-${number}-${Date.now()}-${index}`.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+        area,
+        number,
+        label: `${area} · ${number}`,
+        sortOrder: roomCatalog.length + index + 1,
+      };
+    }).filter((room) => !existingKeys.has(`${room.area}::${room.number}`));
 
-    setRoomCatalogText((current) => {
-      const cleanCurrent = String(current || "").trim();
-      const generatedText = generated.join(newline);
-      return cleanCurrent ? `${cleanCurrent}${newline}${generatedText}` : generatedText;
-    });
+    if (!generatedRooms.length) {
+      setLastAction(`No se añadieron habitaciones porque ${area} ya tiene esos números en el catálogo.`);
+      return;
+    }
+
+    const nextCatalog = reindexRoomCatalog([...roomCatalog, ...generatedRooms]);
+    const alignedDetails = alignRoomDetailsToCatalog(nextCatalog, roomDetails);
+    setRoomCatalog(nextCatalog);
+    setRoomCatalogText(formatRoomCatalog(nextCatalog));
+    setRoomDetails(alignedDetails);
+    setRooms(summarizeRoomDetails(alignedDetails));
+    setRoomDetailsByDate((current) => ({ ...current, [roomDate]: alignedDetails }));
+    setHasUnsavedCatalogChanges(true);
+    setCatalogSaveReminder({ title: "Edificio añadido", text: `${generatedRooms.length} habitaciones añadidas a ${area}. Guarda el catálogo para que aparezca igual en producción y en todos los equipos.` });
 
     setNewRoomArea("");
     setNewRoomStart("101");
     setNewRoomCount(10);
-    setLastAction(`${count} habitaciones añadidas al catálogo para ${area}. Puedes añadir otro edificio o pulsar Guardar catálogo para aplicar.`);
+    setLastAction(`${generatedRooms.length} habitaciones añadidas al catálogo para ${area}. Pulsa Guardar catálogo para conservar el cambio.`);
   }
 
   function clearRoomCatalogText() {
@@ -3206,13 +3363,13 @@ export default function HotelDailyControlApp() {
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                   <div>
                     <h2 className="text-lg font-bold sm:text-xl">Decisión de cupo Booking</h2>
-                    <p className="text-sm text-slate-500">Recomendación basada en ocupación actual, forecast de 10 días, peso de Booking y comisión estimada.</p>
+                    <p className="text-sm text-slate-500">Recomendación basada en ocupación actual, forecast del rango visible, peso de Booking y comisión estimada.</p>
                   </div>
                   <Badge tone={bookingDecision.tone}>{bookingDecision.title}</Badge>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Ocupación hoy</p><p className="text-xl font-bold">{occupancy}%</p></div>
-                  <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Forecast 10 días</p><p className="text-xl font-bold">{forecastOccupancy}%</p></div>
+                  <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Forecast visible</p><p className="text-xl font-bold">{forecastOccupancy}%</p></div>
                   <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Booking forecast</p><p className="text-xl font-bold">{forecastBookingShare}%</p></div>
                   <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Web directa forecast</p><p className="text-xl font-bold">{forecastDirectShare}%</p></div>
                   <div className="rounded-2xl bg-white/80 p-3"><p className="text-xs text-slate-500">Comisión Booking</p><p className="text-xl font-bold">{bookingCommissionCost}{hotel.currency}</p></div>
@@ -3452,8 +3609,8 @@ export default function HotelDailyControlApp() {
               <Card>
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h3 className="font-bold">Checklists creados para esta fecha</h3>
-                    <p className="text-sm text-slate-500">Primero elige qué edificio quieres crear o editar. El checklist general es opcional para tareas de todo el hotel.</p>
+                    <h3 className="font-bold">Checklist de hoy / fecha seleccionada</h3>
+                    <p className="text-sm text-slate-500">Recepción debe trabajar normalmente sobre el día actual. Para revisar días anteriores, cambia la fecha del checklist.</p>
                   </div>
                   <Badge tone={allChecklistAreasClosedForDate ? "green" : "amber"}>{buildingChecklistAreasCreatedForDate.length}/{buildingChecklistAreaOptions.length} edificios creados</Badge>
                 </div>
@@ -3474,7 +3631,7 @@ export default function HotelDailyControlApp() {
                               <button className={buttonLight} type="button" onClick={() => editChecklist(existing)}><Icon name="edit" size={16} /> Editar</button>
                             </>
                           ) : (
-                            <button className={cls(buttonDark, "col-span-2 sm:col-span-1")} type="button" onClick={() => { setChecklistArea(area); setChecklistSignoff(null); setChecklistResponsible(""); setChecklistNotes(""); setLastAction(`Preparando checklist para ${formatDateEs(checklistDate)} · ${area}`); window.setTimeout(() => document.getElementById("checklist-top-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}><Icon name="plus" size={16} /> Crear aquí</button>
+                            <button className={cls(buttonDark, "col-span-2 sm:col-span-1")} type="button" onClick={() => { setChecklistArea(area); setChecklistSignoff(null); setEditingChecklistId(null); setChecklistResponsible(""); setChecklistNotes(""); setTasks(emptyDefaultTasks(checklistTemplate)); setLastAction(`Checklist en blanco preparado para ${formatDateEs(checklistDate)} · ${area}`); window.setTimeout(() => document.getElementById("checklist-top-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}><Icon name="plus" size={16} /> Crear aquí</button>
                           )}
                         </div>
                       </div>
@@ -3497,7 +3654,7 @@ export default function HotelDailyControlApp() {
                         <button className={buttonLight} type="button" onClick={() => editChecklist(findChecklistSignoffFor(checklistDate, "General", checklistHistory))}><Icon name="edit" size={16} /> Editar general</button>
                       </>
                     ) : (
-                      <button className={buttonLight} type="button" onClick={() => { setChecklistArea("General"); setChecklistSignoff(null); setChecklistResponsible(""); setChecklistNotes(""); window.setTimeout(() => document.getElementById("checklist-top-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}><Icon name="plus" size={16} /> Crear checklist general</button>
+                      <button className={buttonLight} type="button" onClick={() => { setChecklistArea("General"); setChecklistSignoff(null); setEditingChecklistId(null); setChecklistResponsible(""); setChecklistNotes(""); setTasks(emptyDefaultTasks(checklistTemplate)); setLastAction(`Checklist general en blanco preparado para ${formatDateEs(checklistDate)}`); window.setTimeout(() => document.getElementById("checklist-top-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50); }}><Icon name="plus" size={16} /> Crear checklist general</button>
                     )}
                   </div>
                 </div>
@@ -3522,9 +3679,10 @@ export default function HotelDailyControlApp() {
                           setChecklistArea(area);
                           setChecklistSignoff(existing);
                           if (existing) {
-                            setChecklistResponsible(existing.responsible || "");
-                            setChecklistNotes(cleanChecklistNotes(existing.notes));
-                            setLastAction(`Ya existe checklist para ${formatDateEs(checklistDate)} · ${area}. Puedes editarlo desde el histórico.`);
+                            setChecklistResponsible("");
+                            setChecklistNotes("");
+                            setTasks(emptyDefaultTasks(checklistTemplate));
+                            setLastAction(`Ya existe checklist para ${formatDateEs(checklistDate)} · ${area}. Si quieres modificarlo, pulsa Editar en su tarjeta.`);
                           } else {
                             setChecklistResponsible("");
                             setChecklistNotes("");
@@ -3541,9 +3699,6 @@ export default function HotelDailyControlApp() {
                       </select>
                     </Field>
                     <Field label="Estado"><div className="flex min-h-10 items-center gap-2"><Badge tone={editingChecklistId ? "amber" : checklistSignoff ? checklistSignoff.status === "Correcto" ? "green" : "amber" : "blue"}>{editingChecklistId ? "Editando cierre" : checklistSignoff ? checklistSignoff.status : "Abierto"}</Badge></div></Field>
-                    <button className={buttonLight} type="button" onClick={createTodayChecklist}>
-                      <Icon name="calendar" size={18} /> Cargar hoy
-                    </button>
                     {checklistSignoff && !editingChecklistId && (
                       <button className={buttonLight} type="button" onClick={createNextChecklist}>
                         <Icon name="plus" size={18} /> Crear checklist siguiente día
@@ -3554,8 +3709,8 @@ export default function HotelDailyControlApp() {
               </Card>
 
               <Card>
-                <h3 className="mb-3 font-bold">Histórico rápido de checklist</h3>
-                <p className="mb-4 text-sm text-slate-500">Vista rápida para comprobar si ya está hecho el checklist de hoy, mañana o fechas recientes sin bajar hasta el final.</p>
+                <h3 className="mb-3 font-bold">Cierres de checklist de la fecha seleccionada</h3>
+                <p className="mb-4 text-sm text-slate-500">Aquí solo aparecen los cierres del {formatDateEs(checklistDate)} para que recepción localice rápido lo pendiente del día.</p>
                 <div className="mb-4 grid gap-3">
                   {Object.entries(groupedChecklistHistory).map(([area, items]) => (
                     <div key={area} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -3574,13 +3729,13 @@ export default function HotelDailyControlApp() {
                               <Badge tone={item.status === "Correcto" ? "green" : "amber"}>{item.completed_count}/{item.total_count}</Badge>
                             </div>
                             <p className="text-xs text-slate-500">{item.responsible || "Responsable no indicado"}</p>
-                            <p className="mt-1 line-clamp-2 text-xs text-slate-600">{cleanChecklistNotes(item.notes) || "Sin observaciones."}</p>
+                            <p className="mt-1 line-clamp-2 text-xs text-slate-600">{cleanChecklistNotes(item.notes) || "Sin observaciones relevantes."}</p>
                           </button>
                         ))}
                       </div>
                     </div>
                   ))}
-                  {checklistHistory.length === 0 && <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Todavía no hay cierres de checklist registrados.</p>}
+                  {checklistSignoffsForDate.length === 0 && <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Todavía no hay cierres de checklist para esta fecha.</p>}
                 </div>
               </Card>
 
@@ -3666,7 +3821,17 @@ export default function HotelDailyControlApp() {
                     )}
                   </div>
                 </div>
-                <Field label="Observaciones de cierre"><textarea className={inputStyle} rows={3} value={checklistNotes} onChange={(e) => setChecklistNotes(e.target.value)} disabled={Boolean(checklistSignoff) && !editingChecklistId} placeholder="Ej.: queda pendiente confirmar late check-out de la 204, revisar cobro de Booking, limpieza avisada..." /></Field>
+                <Field label="Observaciones de cierre">
+                  <textarea className={inputStyle} rows={4} value={checklistNotes} onChange={(e) => setChecklistNotes(e.target.value)} disabled={Boolean(checklistSignoff) && !editingChecklistId} placeholder="Ej.: Limpieza informada de llegadas tempranas. Queda pendiente revisar la habitación 204 por mantenimiento. Cobro de Booking pendiente de confirmar. Se deja aviso para el turno siguiente." />
+                </Field>
+                <div className="mt-3 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+                  <b>Qué añadir aquí:</b> incidencias menores no registradas como incidencia formal, tareas que quedan pendientes, avisos para el siguiente turno, habitaciones que requieren seguimiento, cobros pendientes, peticiones especiales de clientes o cualquier punto que dirección/recepción deba saber mañana.
+                </div>
+                {isWeakChecklistNote(checklistNotes) && (
+                  <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                    <b>Observación demasiado breve:</b> este texto parece una prueba o no aporta contexto suficiente. Sustitúyelo por una nota útil, por ejemplo: “Todo correcto en el edificio. Queda pendiente revisar cobro de la 204 y avisar a limpieza de llegada temprana mañana”.
+                  </div>
+                )}
                 {taskProgress < 100 && !checklistSignoff && (
                   <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
                     <b>Hay tareas pendientes.</b> Puedes cerrar el checklist, pero quedará registrado como “Cerrado con pendientes”.
@@ -3693,22 +3858,27 @@ export default function HotelDailyControlApp() {
                       <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Progreso</p><p className="font-bold">{viewingChecklist.completed_count}/{viewingChecklist.total_count}</p></div>
                       <div className="rounded-2xl bg-white p-3"><p className="text-xs text-slate-500">Creado</p><p className="font-bold">{formatDateTimeEs(viewingChecklist.created_at)}</p></div>
                     </div>
-                    <div className="mt-4 rounded-2xl bg-white p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingChecklist.notes || "Sin observaciones."}</p></div>
+                    <div className="mt-4 rounded-2xl bg-white p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{cleanChecklistNotes(viewingChecklist.notes) || "Sin observaciones relevantes registradas para este cierre."}</p></div>
                   </div>
                 )}
 
-                <h3 className="mb-3 font-bold">Histórico completo de cierres de checklist</h3>
-                <p className="mb-4 text-sm text-slate-500">Listado completo para consultar, editar, imprimir o borrar cierres antiguos.</p>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">{showChecklistHistory ? "Histórico completo de cierres de checklist" : "Cierres del día seleccionado"}</h3>
+                    <p className="text-sm text-slate-500">{showChecklistHistory ? "Listado completo para consultar, editar, imprimir o borrar cierres antiguos." : `Solo se muestran cierres del ${formatDateEs(checklistDate)}. Activa el histórico si necesitas buscar días anteriores.`}</p>
+                  </div>
+                  <button className={buttonLight} type="button" onClick={() => setShowChecklistHistory(!showChecklistHistory)}><Icon name="calendar" size={18} /> {showChecklistHistory ? "Ocultar histórico" : "Consultar histórico"}</button>
+                </div>
                 <div className="hidden overflow-x-auto rounded-2xl border border-slate-100 md:block">
                   <table className="w-full min-w-[980px] text-left text-sm">
                     <thead className="border-b bg-slate-50 text-slate-500"><tr><th className="px-3 py-3">Fecha</th><th>Edificio</th><th>Responsable</th><th>Estado</th><th>Progreso</th><th>Observaciones</th><th>Acciones</th></tr></thead>
                     <tbody>
-                      {checklistHistory.map((item) => <tr key={item.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(item.signoff_date)}</td><td>{getChecklistArea(item)}</td><td>{item.responsible || "-"}</td><td><Badge tone={item.status === "Correcto" ? "green" : "amber"}>{item.status}</Badge></td><td>{item.completed_count}/{item.total_count}</td><td className="max-w-md truncate pr-3">{cleanChecklistNotes(item.notes) || "-"}</td><td className="pr-3"><div className="flex flex-nowrap gap-1"><button className={buttonTiny} type="button" onClick={() => viewChecklist(item)}><Icon name="view" size={13} /> Ver</button><button className={buttonTiny} type="button" onClick={() => editChecklist(item)}><Icon name="edit" size={13} /> Editar</button><button className={buttonTiny} type="button" onClick={() => printChecklist(item)}><Icon name="print" size={13} /> Imprimir</button><button className={buttonTinyDanger} type="button" onClick={() => askDeleteChecklist(item)}><Icon name="trash" size={13} /> Borrar</button></div></td></tr>)}
+                      {(showChecklistHistory ? checklistHistory : checklistSignoffsForDate).map((item) => <tr key={item.id} className="border-b last:border-0"><td className="px-3 py-3">{formatDateEs(item.signoff_date)}</td><td>{getChecklistArea(item)}</td><td>{item.responsible || "-"}</td><td><Badge tone={item.status === "Correcto" ? "green" : "amber"}>{item.status}</Badge></td><td>{item.completed_count}/{item.total_count}</td><td className="max-w-md truncate pr-3">{cleanChecklistNotes(item.notes) || "-"}</td><td className="pr-3"><div className="flex flex-nowrap gap-1"><button className={buttonTiny} type="button" onClick={() => viewChecklist(item)}><Icon name="view" size={13} /> Ver</button><button className={buttonTiny} type="button" onClick={() => editChecklist(item)}><Icon name="edit" size={13} /> Editar</button><button className={buttonTiny} type="button" onClick={() => printChecklist(item)}><Icon name="print" size={13} /> Imprimir</button><button className={buttonTinyDanger} type="button" onClick={() => askDeleteChecklist(item)}><Icon name="trash" size={13} /> Borrar</button></div></td></tr>)}
                     </tbody>
                   </table>
                 </div>
                 <div className="grid gap-3 md:hidden">
-                  {checklistHistory.map((item) => (
+                  {(showChecklistHistory ? checklistHistory : checklistSignoffsForDate).map((item) => (
                     <div key={item.id} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <div>
@@ -3720,7 +3890,7 @@ export default function HotelDailyControlApp() {
                       <p className="text-sm text-slate-600"><b>Responsable:</b> {item.responsible || "-"}</p>
                       <p className="text-sm text-slate-600"><b>Progreso:</b> {item.completed_count}/{item.total_count}</p>
                       <p className="text-sm text-slate-600"><b>Edificio:</b> {getChecklistArea(item)}</p>
-                      <p className="mt-2 line-clamp-2 text-sm text-slate-600">{cleanChecklistNotes(item.notes) || "Sin observaciones."}</p>
+                      <p className="mt-2 line-clamp-2 text-sm text-slate-600">{cleanChecklistNotes(item.notes) || "Sin observaciones relevantes."}</p>
                       <div className="mt-3 flex flex-nowrap gap-1 overflow-x-auto pb-1">
                         <button className={buttonTiny} type="button" onClick={() => viewChecklist(item)}>Ver</button>
                         <button className={buttonTiny} type="button" onClick={() => editChecklist(item)}>Editar</button>
@@ -4114,10 +4284,13 @@ export default function HotelDailyControlApp() {
                   </div>
                   <Badge tone={blockingReservationConflicts.length ? "red" : reservationConflicts.length ? "amber" : "green"}>{blockingReservationConflicts.length ? `${blockingReservationConflicts.length} bloqueantes` : reservationConflicts.length ? `${reservationConflicts.length} avisos` : "Sin conflictos"}</Badge>
                 </div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_auto_auto] xl:items-end">
-                  <Field label="Inicio del planning"><input className={inputStyle} type="date" value={calendarStartDate} onChange={(e) => setCalendarStartDate(e.target.value)} /></Field>
-                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, -7))}><Icon name="calendar" size={18} /> 7 días antes</button>
-                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, 7))}><Icon name="calendar" size={18} /> 7 días después</button>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_auto_auto_auto_auto_auto] xl:items-end">
+                  <Field label="Ir a fecha"><input className={inputStyle} type="date" value={calendarStartDate} onChange={(e) => setCalendarStartDate(startOfWeekIso(e.target.value))} /></Field>
+                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, -30))}><Icon name="calendar" size={18} /> Mes anterior</button>
+                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, -7))}><Icon name="calendar" size={18} /> Semana anterior</button>
+                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(startOfWeekIso(todayIso()))}><Icon name="calendar" size={18} /> Esta semana</button>
+                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, 7))}><Icon name="calendar" size={18} /> Semana siguiente</button>
+                  <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, 30))}><Icon name="calendar" size={18} /> Mes siguiente</button>
                 </div>
                 <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
                   <b>Regla hotelera:</b> una reserva está ocupada desde la fecha de entrada incluida hasta la fecha de salida no incluida. Ejemplo: entrada 09/05 y salida 11/05 ocupa las noches del 09 y 10.
@@ -4127,8 +4300,8 @@ export default function HotelDailyControlApp() {
               <Card>
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h3 className="font-bold">Previsión próximos 10 días</h3>
-                    <p className="text-sm text-slate-500">Forecast calculado por noche ocupada según las reservas del planning visible.</p>
+                    <h3 className="font-bold">Previsión del rango visible</h3>
+                    <p className="text-sm text-slate-500">Forecast calculado por noche ocupada en el rango visible de {calendarDays.length} días: {formatDateEs(calendarWeekStart)} → {formatDateEs(calendarWeekEnd)}.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Badge tone="green">{reservationForecast.total}{hotel.currency}</Badge>
@@ -4213,7 +4386,7 @@ export default function HotelDailyControlApp() {
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <h3 className="font-bold">Planning visual</h3>
-                    <p className="text-sm text-slate-500">Las barras muestran reservas por habitación durante los próximos 10 días. El importe visible principal es el precio por noche.</p>
+                    <p className="text-sm text-slate-500">Las barras muestran reservas por habitación en {calendarDays.length} días visibles. En escritorio se muestran 15 días; en tablet y móvil se reduce para facilitar la lectura. El importe visible principal es el precio por noche.</p>
                   </div>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <Badge tone="slate">{reservations.length} reservas</Badge>
@@ -4221,22 +4394,22 @@ export default function HotelDailyControlApp() {
                   </div>
                 </div>
                 <div className="max-h-[560px] overflow-auto rounded-2xl border border-slate-200">
-                  <div className="min-w-[980px]">
-                    <div className="grid grid-cols-[170px_repeat(10,minmax(92px,1fr))] border-b bg-slate-50 text-xs font-bold text-slate-600">
-                      <div className="sticky left-0 z-10 border-r bg-slate-50 p-3">Habitación</div>
-                      {calendarDays.map((day) => <div key={day} className="border-r p-3 text-center last:border-r-0">{formatDateEs(day).slice(0, 5)}</div>)}
+                  <div style={{ minWidth: `${150 + calendarDays.length * 70}px` }}>
+                    <div className="sticky top-0 z-30 grid border-b bg-slate-50 text-xs font-bold text-slate-600 shadow-sm" style={{ gridTemplateColumns: `150px repeat(${calendarDays.length}, minmax(70px, 1fr))` }}>
+                      <div className="sticky left-0 z-40 border-r bg-slate-50 p-3">Habitación</div>
+                      {calendarDays.map((day) => <div key={day} className="border-r p-3 text-center last:border-r-0"><span className="block capitalize">{formatWeekdayShort(day)}</span><span className="block text-[11px] font-semibold text-slate-500">{formatDateEs(day).slice(0, 5)}</span></div>)}
                     </div>
                     {roomInventory.map((room) => {
                       const label = room.label || `${room.area} · ${room.number}`;
-                      const rowReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservation.status !== "Cancelada" && reservation.status !== "No-show" && reservation.checkinDate < addDaysIso(calendarStartDate, calendarDays.length) && reservation.checkoutDate > calendarStartDate);
+                      const rowReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservation.status !== "Cancelada" && reservation.status !== "No-show" && reservation.checkinDate < addDaysIso(calendarWeekStart, calendarDays.length) && reservation.checkoutDate > calendarWeekStart);
                       return (
-                        <div key={`planning-${room.id}`} className="grid grid-cols-[170px_1fr] border-b text-xs last:border-b-0">
+                        <div key={`planning-${room.id}`} className="grid border-b text-xs last:border-b-0" style={{ gridTemplateColumns: "150px 1fr" }}>
                           <div className="sticky left-0 z-20 border-r bg-white p-3 font-bold">
                             <span className="block truncate">{label}</span>
                             <span className="text-[11px] font-normal text-slate-500">{room.area}</span>
                           </div>
                           <div className="relative h-[72px] bg-white">
-                            <div className="absolute inset-0 grid grid-cols-10">
+                            <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${calendarDays.length}, minmax(0, 1fr))` }}>
                               {calendarDays.map((day) => {
                                 const dayReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservationTouchesDate(reservation, day));
                                 const isCheckin = dayReservations.some((reservation) => reservation.checkinDate === day);
@@ -4249,8 +4422,8 @@ export default function HotelDailyControlApp() {
                               })}
                             </div>
                             {rowReservations.map((reservation) => {
-                              const startIndex = Math.max(daysBetweenIso(calendarStartDate, reservation.checkinDate), 0);
-                              const endIndex = Math.min(daysBetweenIso(calendarStartDate, reservation.checkoutDate), calendarDays.length);
+                              const startIndex = Math.max(daysBetweenIso(calendarWeekStart, reservation.checkinDate), 0);
+                              const endIndex = Math.min(daysBetweenIso(calendarWeekStart, reservation.checkoutDate), calendarDays.length);
                               const span = Math.max(endIndex - startIndex, 1);
                               return (
                                 <button
@@ -4258,7 +4431,7 @@ export default function HotelDailyControlApp() {
                                   type="button"
                                   onClick={() => openReservationModal(reservation)}
                                   className={cls("absolute top-2 z-10 h-14 overflow-hidden rounded-xl border px-2 py-1 text-left text-[10px] font-bold leading-tight shadow-sm", reservation.channel === "Pendiente" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-sky-200 bg-sky-50 text-sky-900")}
-                                  style={{ left: `${startIndex * 10}%`, width: `calc(${span * 10}% - 8px)` }}
+                                  style={{ left: `${startIndex * (100 / calendarDays.length)}%`, width: `calc(${span * (100 / calendarDays.length)}% - 8px)` }}
                                   title={`${reservation.roomLabel} · ${reservation.guestName} · ${formatDateEs(reservation.checkinDate)} → ${formatDateEs(reservation.checkoutDate)}`}
                                 >
                                   <span className="block truncate">{reservation.guestName || "Reserva"}</span>
@@ -4557,9 +4730,9 @@ export default function HotelDailyControlApp() {
                     <Field label="Nº habitaciones">
                       <input className={inputStyle} type="number" min="1" value={newRoomCount} onChange={(e) => setNewRoomCount(e.target.value)} placeholder="Cantidad" />
                     </Field>
-                    <button className={buttonDark} type="button" onClick={addRoomAreaToCatalog}><Icon name="plus" size={18} /> Añadir edificio/estancia</button>
+                    <button className={buttonDark} type="button" onClick={addRoomAreaToCatalog}><Icon name="plus" size={18} /> Añadir y preparar guardado</button>
                   </div>
-                  <p className="mt-3 text-xs text-slate-500">Ejemplo: “Anexo”, número inicial “101” y Nº habitaciones “10” generará Anexo · 101 hasta Anexo · 110.</p>
+                  <p className="mt-3 text-xs text-slate-500">Ejemplo: “Anexo”, número inicial “101” y Nº habitaciones “10” generará Anexo · 101 hasta Anexo · 110. Después aparecerá un aviso para guardar el catálogo.</p>
 
                   <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
                     <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -4639,17 +4812,30 @@ export default function HotelDailyControlApp() {
                     <h3 className="font-bold">Catálogo de edificios y habitaciones</h3>
                     <p className="text-sm text-slate-500">Este catálogo se usa en Habitaciones, Calendario, Incidencias y Dirección. Al guardarlo, se sincroniza para todos los equipos.</p>
                   </div>
-                  <button className={buttonDark} type="button" onClick={saveRoomCatalogToSupabase}><Icon name="save" size={18} /> Guardar catálogo</button>
+                  <button className={cls(buttonDark, hasUnsavedCatalogChanges ? "ring-4 ring-amber-200" : "")} type="button" onClick={saveRoomCatalogToSupabase}><Icon name="save" size={18} /> {hasUnsavedCatalogChanges ? "Guardar catálogo pendiente" : "Guardar catálogo"}</button>
                 </div>
+                {hasUnsavedCatalogChanges && (
+                  <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <b>Cambios de catálogo sin guardar</b>
+                        <p>Has modificado edificios o habitaciones. Pulsa Guardar catálogo para sincronizarlo con producción y todos los equipos.</p>
+                      </div>
+                      <button className={buttonDark} type="button" onClick={saveRoomCatalogToSupabase}><Icon name="save" size={18} /> Guardar ahora</button>
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-3">
-                  {Object.entries(groupRoomsByArea(roomCatalog)).map(([area, areaRooms]) => (
+                  {Object.entries(groupRoomsByArea(roomCatalog)).map(([area, areaRooms], areaIndex, areaList) => (
                     <div key={`catalog-${area}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto] lg:items-center">
+                      <div className="grid gap-3 lg:grid-cols-[1fr_auto_auto_auto_auto_auto] lg:items-center">
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Edificio / estancia</p>
                           <h4 className="mt-1 text-lg font-bold text-slate-900">{area}</h4>
                         </div>
                         <div className="rounded-2xl bg-white px-4 py-3 text-sm font-bold text-slate-700">{areaRooms.length} habitaciones</div>
+                        <button className={buttonTiny} type="button" onClick={() => moveCatalogArea(area, -1)} disabled={areaIndex === 0}><Icon name="calendar" size={14} /> Subir</button>
+                        <button className={buttonTiny} type="button" onClick={() => moveCatalogArea(area, 1)} disabled={areaIndex === areaList.length - 1}><Icon name="calendar" size={14} /> Bajar</button>
                         <button className={buttonTiny} type="button" onClick={() => setAreaRenameCandidate({ oldArea: area, newArea: area })}><Icon name="edit" size={14} /> Renombrar</button>
                         <button className={buttonTinyDanger} type="button" onClick={() => requestDeleteCatalogArea(area)}><Icon name="trash" size={14} /> Borrar edificio</button>
                       </div>
@@ -4748,31 +4934,35 @@ export default function HotelDailyControlApp() {
             <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h3 className="text-lg font-bold sm:text-xl">Planning visual · Pantalla completa</h3>
-                <p className="text-sm text-slate-500">{hotel.name} · desde {formatDateEs(calendarStartDate)} · {reservations.length} reservas</p>
+                <p className="text-sm text-slate-500">{hotel.name} · {calendarDays.length} días {formatDateEs(calendarWeekStart)} → {formatDateEs(calendarWeekEnd)} · {reservations.length} reservas</p>
               </div>
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, -7))}><Icon name="calendar" size={18} /> 7 días antes</button>
-                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarStartDate, 7))}><Icon name="calendar" size={18} /> 7 días después</button>
+                <input className={inputStyle} type="date" value={calendarStartDate} onChange={(e) => setCalendarStartDate(startOfWeekIso(e.target.value))} />
+                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, -30))}><Icon name="calendar" size={18} /> Mes anterior</button>
+                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, -7))}><Icon name="calendar" size={18} /> Semana anterior</button>
+                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(startOfWeekIso(todayIso()))}><Icon name="calendar" size={18} /> Esta semana</button>
+                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, 7))}><Icon name="calendar" size={18} /> Semana siguiente</button>
+                <button className={buttonLight} type="button" onClick={() => setCalendarStartDate(addDaysIso(calendarWeekStart, 30))}><Icon name="calendar" size={18} /> Mes siguiente</button>
                 <button className={buttonDark} type="button" onClick={() => setCalendarFullscreen(false)}><Icon name="cancel" size={18} /> Cerrar</button>
               </div>
             </div>
             <div className="flex-1 overflow-auto p-4">
-              <div className="min-w-[1180px] rounded-2xl border border-slate-200">
-                <div className="grid grid-cols-[190px_repeat(10,minmax(100px,1fr))] border-b bg-slate-50 text-xs font-bold text-slate-600">
-                  <div className="sticky left-0 z-20 border-r bg-slate-50 p-3">Habitación</div>
-                  {calendarDays.map((day) => <div key={`full-${day}`} className="border-r p-3 text-center last:border-r-0">{formatDateEs(day).slice(0, 5)}</div>)}
+              <div className="rounded-2xl border border-slate-200" style={{ minWidth: `${190 + calendarDays.length * 90}px` }}>
+                <div className="sticky top-0 z-30 grid border-b bg-slate-50 text-xs font-bold text-slate-600 shadow-sm" style={{ gridTemplateColumns: `190px repeat(${calendarDays.length}, minmax(90px, 1fr))` }}>
+                  <div className="sticky left-0 z-40 border-r bg-slate-50 p-3">Habitación</div>
+                  {calendarDays.map((day) => <div key={`full-${day}`} className="border-r p-3 text-center last:border-r-0"><span className="block capitalize">{formatWeekdayShort(day)}</span><span className="block text-[11px] font-semibold text-slate-500">{formatDateEs(day).slice(0, 5)}</span></div>)}
                 </div>
                 {roomInventory.map((room) => {
                   const label = room.label || `${room.area} · ${room.number}`;
-                  const rowReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservation.status !== "Cancelada" && reservation.status !== "No-show" && reservation.checkinDate < addDaysIso(calendarStartDate, calendarDays.length) && reservation.checkoutDate > calendarStartDate);
+                  const rowReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservation.status !== "Cancelada" && reservation.status !== "No-show" && reservation.checkinDate < addDaysIso(calendarWeekStart, calendarDays.length) && reservation.checkoutDate > calendarWeekStart);
                   return (
-                    <div key={`fullscreen-planning-${room.id}`} className="grid grid-cols-[190px_1fr] border-b text-xs last:border-b-0">
+                    <div key={`fullscreen-planning-${room.id}`} className="grid border-b text-xs last:border-b-0" style={{ gridTemplateColumns: "190px 1fr" }}>
                       <div className="sticky left-0 z-20 border-r bg-white p-3 font-bold">
                         <span className="block truncate">{label}</span>
                         <span className="text-[11px] font-normal text-slate-500">{room.area}</span>
                       </div>
                       <div className="relative h-[72px] bg-white">
-                        <div className="absolute inset-0 grid grid-cols-10">
+                        <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${calendarDays.length}, minmax(0, 1fr))` }}>
                           {calendarDays.map((day) => {
                             const dayReservations = reservations.filter((reservation) => reservation.roomLabel === label && reservationTouchesDate(reservation, day));
                             const isCheckin = dayReservations.some((reservation) => reservation.checkinDate === day);
@@ -4785,8 +4975,8 @@ export default function HotelDailyControlApp() {
                           })}
                         </div>
                         {rowReservations.map((reservation) => {
-                          const startIndex = Math.max(daysBetweenIso(calendarStartDate, reservation.checkinDate), 0);
-                          const endIndex = Math.min(daysBetweenIso(calendarStartDate, reservation.checkoutDate), calendarDays.length);
+                          const startIndex = Math.max(daysBetweenIso(calendarWeekStart, reservation.checkinDate), 0);
+                          const endIndex = Math.min(daysBetweenIso(calendarWeekStart, reservation.checkoutDate), calendarDays.length);
                           const span = Math.max(endIndex - startIndex, 1);
                           return (
                             <button
@@ -4794,7 +4984,7 @@ export default function HotelDailyControlApp() {
                               type="button"
                               onClick={() => openReservationModal(reservation)}
                               className={cls("absolute top-2 z-10 h-14 overflow-hidden rounded-xl border px-2 py-1 text-left text-[10px] font-bold leading-tight shadow-sm", reservation.channel === "Pendiente" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-sky-200 bg-sky-50 text-sky-900")}
-                              style={{ left: `${startIndex * 10}%`, width: `calc(${span * 10}% - 8px)` }}
+                              style={{ left: `${startIndex * (100 / calendarDays.length)}%`, width: `calc(${span * (100 / calendarDays.length)}% - 8px)` }}
                               title={`${reservation.roomLabel} · ${reservation.guestName} · ${formatDateEs(reservation.checkinDate)} → ${formatDateEs(reservation.checkoutDate)}`}
                             >
                               <span className="block truncate">{reservation.guestName || "Reserva"}</span>
@@ -4808,6 +4998,18 @@ export default function HotelDailyControlApp() {
                 })}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {hasUnsavedCatalogChanges && (
+        <div className="fixed inset-x-0 bottom-0 z-40 border-t border-amber-200 bg-white/95 p-3 shadow-2xl backdrop-blur">
+          <div className="mx-auto flex max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-sm text-slate-700">
+              <b>Cambios de catálogo sin guardar</b>
+              <p className="text-xs text-slate-500">Guarda el catálogo para que edificios y habitaciones se vean igual en producción y en todos los equipos.</p>
+            </div>
+            <button className={buttonDark} type="button" onClick={saveRoomCatalogToSupabase}><Icon name="save" size={18} /> Guardar catálogo</button>
           </div>
         </div>
       )}
@@ -5077,7 +5279,7 @@ export default function HotelDailyControlApp() {
             <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Progreso</p><p className="font-bold">{viewingChecklist.completed_count}/{viewingChecklist.total_count}</p></div>
             <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Creado</p><p className="font-bold">{formatDateTimeEs(viewingChecklist.created_at)}</p></div>
           </div>
-          <div className="mt-4 rounded-2xl bg-slate-50 p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{viewingChecklist.notes || "Sin observaciones."}</p></div>
+          <div className="mt-4 rounded-2xl bg-slate-50 p-4"><p className="text-sm font-bold">Observaciones</p><p className="mt-1 whitespace-pre-wrap text-sm text-slate-700">{cleanChecklistNotes(viewingChecklist.notes) || "Sin observaciones relevantes registradas para este cierre."}</p></div>
         </Modal>
       )}
 
@@ -5136,6 +5338,29 @@ export default function HotelDailyControlApp() {
               </Field>
             )}
             <p className="text-sm text-slate-600">Después de borrar, pulsa <b>Guardar catálogo</b> para sincronizar el cambio.</p>
+          </div>
+        </Modal>
+      )}
+
+      {catalogSaveReminder && (
+        <Modal
+          title={catalogSaveReminder.title || "Cambios de catálogo"}
+          subtitle="El catálogo de edificios y habitaciones tiene cambios pendientes de guardar."
+          onClose={() => setCatalogSaveReminder(null)}
+          footer={
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button className={buttonLight} type="button" onClick={() => setCatalogSaveReminder(null)}><Icon name="cancel" size={18} /> Seguir editando</button>
+              <button className={buttonDark} type="button" onClick={saveRoomCatalogToSupabase}><Icon name="save" size={18} /> Guardar catálogo ahora</button>
+            </div>
+          }
+        >
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              {catalogSaveReminder.text || "Guarda el catálogo para que se sincronice con todos los equipos."}
+            </div>
+            <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+              Hasta que no pulses <b>Guardar catálogo</b>, el cambio puede quedarse solo en este navegador.
+            </div>
           </div>
         </Modal>
       )}
