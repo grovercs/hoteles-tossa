@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * Hotel Daily Control - Supabase Ready MVP
+ * Hotel Daily Control - MVP operativo
  *
  * - Responsive para móvil/tablet/escritorio.
- * - Usa Supabase vía REST API si existen VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY.
- * - Si Supabase no está configurado o falla, funciona en modo demo con localStorage.
+ * - Puede sincronizar datos si existen variables de entorno configuradas.
+ * - Si la sincronización no está configurada o falla, funciona en modo demo con localStorage.
  * - Sin dependencias externas de iconos.
  */
 
@@ -340,7 +340,7 @@ function writeLocal(data) {
 }
 
 async function sb(path, options = {}) {
-  if (!HAS_SUPABASE) throw new Error("Supabase no está configurado");
+  if (!HAS_SUPABASE) throw new Error("El sistema de sincronización no está configurado");
 
   const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
@@ -355,7 +355,7 @@ async function sb(path, options = {}) {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Error Supabase ${response.status}`);
+    throw new Error(text || `Error de sincronización ${response.status}`);
   }
 
   if (response.status === 204) return null;
@@ -1252,7 +1252,7 @@ export default function HotelDailyControlApp() {
   const [copied, setCopied] = useState(false);
   const [copiedReportId, setCopiedReportId] = useState(null);
   const [lastAction, setLastAction] = useState("");
-  const [connection, setConnection] = useState({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Conectando con Supabase..." : "Modo local: faltan variables de Supabase" });
+  const [connection, setConnection] = useState({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Preparando sistema..." : "Modo demostración" });
   const [form, setForm] = useState({
     date: todayIso(),
     manager: "",
@@ -1364,10 +1364,10 @@ export default function HotelDailyControlApp() {
         } else {
           setReservations([]);
         }
-        setConnection({ status: "online", message: "Conectado a Supabase" });
+        setConnection({ status: "online", message: "Sistema sincronizado" });
       } catch (error) {
         console.error(error);
-        setConnection({ status: "error", message: "No se pudo conectar con Supabase. Usando modo local." });
+        setConnection({ status: "error", message: "Trabajando en modo seguro local" });
       }
     }
 
@@ -1527,6 +1527,7 @@ export default function HotelDailyControlApp() {
     ["calendar", "Calendario", "calendar"],
     ["reports", "Informes", "file"],
     ["setup", "Config.", "settings"],
+    ["help", "Ayuda", "sparkles"],
   ];
 
   function goToTab(id) {
@@ -1569,7 +1570,7 @@ export default function HotelDailyControlApp() {
           const inserted = await sb("daily_reports?select=*", { method: "POST", body: JSON.stringify(reportToRow(draftReport, hotel.id)) });
           const savedReport = inserted?.[0] ? reportFromRow(inserted[0]) : draftReport;
           setReports([savedReport, ...reports]);
-          setLastAction(`Parte diario guardado en Supabase: ${formatDateEs(savedReport.date)}`);
+          setLastAction(`Parte diario guardado correctamente: ${formatDateEs(savedReport.date)}`);
         }
       } else {
         if (editingReportId) {
@@ -1582,7 +1583,7 @@ export default function HotelDailyControlApp() {
       }
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "Error guardando en Supabase. Guardado localmente." });
+      setConnection({ status: "error", message: "No se pudo sincronizar. Cambio guardado localmente." });
       if (editingReportId) setReports(reports.map((report) => report.id === editingReportId ? draftReport : report));
       else setReports([draftReport, ...reports]);
     }
@@ -1657,7 +1658,7 @@ export default function HotelDailyControlApp() {
         });
 
         if (!deleted || deleted.length === 0) {
-          throw new Error("Supabase no ha eliminado ninguna fila. Revisa la política DELETE de RLS en daily_reports.");
+          throw new Error("No se ha eliminado ninguna fila. Revisa los permisos de borrado.");
         }
       }
 
@@ -1668,7 +1669,7 @@ export default function HotelDailyControlApp() {
     } catch (error) {
       console.error(error);
       const message = error?.message || "Error desconocido eliminando el parte";
-      setConnection({ status: "error", message: `No se pudo borrar el parte en Supabase: ${message}` });
+      setConnection({ status: "error", message: `No se pudo borrar el parte: ${message}` });
       setLastAction(`Fallo al borrar parte: ${message}`);
     }
   }
@@ -1723,7 +1724,7 @@ export default function HotelDailyControlApp() {
           });
 
           if (!updated || updated.length === 0) {
-            throw new Error("Supabase no ha actualizado ninguna fila. Revisa la política UPDATE de RLS en incidents.");
+            throw new Error("No se ha actualizado ninguna fila. Revisa los permisos de edición.");
           }
 
           const savedIncident = incidentFromRow(updated[0]);
@@ -1737,7 +1738,7 @@ export default function HotelDailyControlApp() {
           });
           const savedIncident = inserted?.[0] ? incidentFromRow(inserted[0]) : draftIncident;
           setIncidents([savedIncident, ...incidents]);
-          setLastAction(`Incidencia guardada en Supabase: habitación ${savedIncident.room}`);
+          setLastAction(`Incidencia guardada correctamente: habitación ${savedIncident.room}`);
         }
       } else {
         if (editingIncidentId) {
@@ -1751,8 +1752,8 @@ export default function HotelDailyControlApp() {
     } catch (error) {
       console.error(error);
       const message = error?.message || "Error desconocido guardando incidencia";
-      setConnection({ status: "error", message: `Error guardando incidencia en Supabase: ${message}` });
-      setLastAction(`Fallo al guardar incidencia en Supabase: ${message}`);
+      setConnection({ status: "error", message: `Error guardando incidencia: ${message}` });
+      setLastAction(`Fallo al guardar incidencia: ${message}`);
       if (editingIncidentId) setIncidents(incidents.map((incident) => incident.id === editingIncidentId ? draftIncident : incident));
       else setIncidents([draftIncident, ...incidents]);
     }
@@ -1832,13 +1833,13 @@ export default function HotelDailyControlApp() {
       setIncidents((current) => current.filter((incident) => incident.id !== incidentToDelete.id));
       setDeleteIncidentCandidate(null);
       if (viewingIncident?.id === incidentToDelete.id) setViewingIncident(null);
-      setConnection((current) => HAS_SUPABASE ? { status: "online", message: "Conectado a Supabase" } : current);
-      setLastAction(shouldDeleteRemote ? `Incidencia eliminada de Supabase: habitación ${incidentToDelete.room}` : `Incidencia eliminada en modo local: habitación ${incidentToDelete.room}`);
+      setConnection((current) => HAS_SUPABASE ? { status: "online", message: "Sistema sincronizado" } : current);
+      setLastAction(shouldDeleteRemote ? `Incidencia eliminada correctamente: habitación ${incidentToDelete.room}` : `Incidencia eliminada en modo seguro local: habitación ${incidentToDelete.room}`);
     } catch (error) {
       console.error(error);
       const message = error?.message || "Error desconocido eliminando la incidencia";
-      setLastAction(`No se pudo borrar la incidencia en Supabase: ${message}`);
-      setConnection({ status: "error", message: `No se pudo borrar la incidencia en Supabase: ${message}` });
+      setLastAction(`No se pudo borrar la incidencia: ${message}`);
+      setConnection({ status: "error", message: `No se pudo borrar la incidencia: ${message}` });
     }
   }
 
@@ -1848,13 +1849,13 @@ export default function HotelDailyControlApp() {
       if (connection.status === "online" && !String(id).startsWith("local-") && !String(id).startsWith("demo-")) {
         const updated = await sb(`incidents?id=eq.${id}&select=*`, { method: "PATCH", body: JSON.stringify({ status, updated_at: new Date().toISOString() }) });
         if (!updated || updated.length === 0) {
-          throw new Error("Supabase no ha actualizado ninguna fila. Revisa la política UPDATE de RLS en incidents.");
+          throw new Error("No se ha actualizado ninguna fila. Revisa los permisos de edición.");
         }
         setLastAction(`Estado de incidencia actualizado: ${status}`);
       }
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "No se pudo actualizar la incidencia en Supabase." });
+      setConnection({ status: "error", message: "No se pudo sincronizar el cambio de incidencia." });
     }
   }
 
@@ -1872,7 +1873,7 @@ export default function HotelDailyControlApp() {
       }
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "No se pudo actualizar el checklist en Supabase." });
+      setConnection({ status: "error", message: "No se pudo sincronizar el checklist." });
     }
   }
 
@@ -2088,7 +2089,7 @@ export default function HotelDailyControlApp() {
         });
 
         if (!deleted || deleted.length === 0) {
-          throw new Error("Supabase no ha eliminado ninguna fila. Revisa la política DELETE de RLS en checklist_signoffs.");
+          throw new Error("No se ha eliminado ninguna fila. Revisa los permisos de borrado del checklist.");
         }
       }
 
@@ -2104,7 +2105,7 @@ export default function HotelDailyControlApp() {
     } catch (error) {
       console.error(error);
       const message = error?.message || "Error desconocido eliminando el cierre de checklist";
-      setConnection({ status: "error", message: `No se pudo borrar el cierre de checklist en Supabase: ${message}` });
+      setConnection({ status: "error", message: `No se pudo borrar el cierre de checklist: ${message}` });
       setLastAction(`Fallo al borrar cierre de checklist: ${message}`);
     }
   }
@@ -2140,7 +2141,7 @@ export default function HotelDailyControlApp() {
     } catch (error) {
       console.error(error);
       const message = error?.message || "Error desconocido guardando habitaciones";
-      setConnection({ status: "error", message: `No se pudo guardar el estado de habitaciones en Supabase: ${message}` });
+      setConnection({ status: "error", message: `No se pudo guardar el estado de habitaciones: ${message}` });
     }
   }
 
@@ -2378,7 +2379,7 @@ export default function HotelDailyControlApp() {
         const inserted = await sb("reservations?select=*", { method: "POST", body: JSON.stringify(reservationToRow(draft, hotel.id)) });
         const saved = inserted?.[0] ? reservationFromRow(inserted[0]) : draft;
         setReservations([saved, ...reservations]);
-        setLastAction(conflict ? `Reserva creada en Supabase con aviso de posible overbooking en ${saved.roomLabel}.` : `Reserva creada en Supabase: ${saved.roomLabel} · ${formatDateEs(saved.checkinDate)} → ${formatDateEs(saved.checkoutDate)}`);
+        setLastAction(`Reserva creada correctamente: ${saved.roomLabel} · ${formatDateEs(saved.checkinDate)} → ${formatDateEs(saved.checkoutDate)}`);
       } else {
         setReservations([draft, ...reservations]);
         setLastAction(conflict ? `Reserva creada con aviso de posible overbooking en ${draft.roomLabel}.` : `Reserva creada: ${draft.roomLabel} · ${formatDateEs(draft.checkinDate)} → ${formatDateEs(draft.checkoutDate)}`);
@@ -2386,8 +2387,8 @@ export default function HotelDailyControlApp() {
     } catch (error) {
       console.error(error);
       setReservations([draft, ...reservations]);
-      setConnection({ status: "error", message: "No se pudo guardar la reserva en Supabase. Guardada localmente." });
-      setLastAction("Reserva guardada localmente por error de Supabase.");
+      setConnection({ status: "error", message: "No se pudo sincronizar la reserva. Guardada en modo seguro local." });
+      setLastAction("Reserva guardada en modo seguro local por un problema de sincronización.");
     }
 
     setReservationForm({ roomLabel: "", guestName: "", channel: "", checkinDate: calendarStartDate, checkoutDate: addDaysIso(calendarStartDate, 1), nightlyRate: 0, totalAmount: 0, reference: "", phone: "", email: "", status: "Confirmada", notes: "" });
@@ -2409,8 +2410,8 @@ export default function HotelDailyControlApp() {
       setLastAction(`Reserva marcada como ${status}: ${reservationToUpdate.roomLabel}.`);
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "No se pudo cambiar el estado de la reserva en Supabase." });
-      setLastAction("No se pudo cambiar el estado de la reserva en Supabase.");
+      setConnection({ status: "error", message: "No se pudo cambiar el estado de la reserva." });
+      setLastAction("No se pudo cambiar el estado de la reserva.");
     }
   }
 
@@ -2433,8 +2434,8 @@ export default function HotelDailyControlApp() {
       setLastAction(`Reserva eliminada: ${reservationToDelete?.roomLabel || "planning"}.`);
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "No se pudo borrar la reserva en Supabase." });
-      setLastAction("No se pudo borrar la reserva en Supabase.");
+      setConnection({ status: "error", message: "No se pudo borrar la reserva." });
+      setLastAction("No se pudo borrar la reserva.");
     }
   }
 
@@ -2499,7 +2500,7 @@ export default function HotelDailyControlApp() {
           const inserted = await sb("reservations?select=*", { method: "POST", body: JSON.stringify(reservationToRow(saved, hotel.id)) });
           const remoteSaved = inserted?.[0] ? reservationFromRow(inserted[0]) : saved;
           setReservations([remoteSaved, ...reservations]);
-          setLastAction(`Reserva guardada en Supabase: ${remoteSaved.roomLabel}`);
+          setLastAction(`Reserva guardada correctamente: ${remoteSaved.roomLabel}`);
         } else {
           const updated = await sb(`reservations?id=eq.${reservationModal.id}&select=*`, { method: "PATCH", body: JSON.stringify(reservationToRow(saved, hotel.id)) });
           const remoteSaved = updated?.[0] ? reservationFromRow(updated[0]) : saved;
@@ -2512,9 +2513,9 @@ export default function HotelDailyControlApp() {
       }
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "No se pudo guardar la reserva en Supabase. Guardada localmente." });
+      setConnection({ status: "error", message: "No se pudo sincronizar la reserva. Guardada en modo seguro local." });
       setReservations(reservationModal.mode === "new" ? [saved, ...reservations] : reservations.map((reservation) => reservation.id === reservationModal.id ? saved : reservation));
-      setLastAction("Reserva guardada localmente por error de Supabase.");
+      setLastAction("Reserva guardada en modo seguro local por un problema de sincronización.");
     }
 
     setReservationModal(null);
@@ -2531,13 +2532,13 @@ export default function HotelDailyControlApp() {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
         const updated = await sb(`hotels?id=eq.${hotel.id}&select=*`, { method: "PATCH", body: JSON.stringify(hotelToRow(hotel)) });
         if (updated?.[0]) setHotel(normalizeHotel(updated[0]));
-        setLastAction("Configuración del hotel guardada en Supabase");
+        setLastAction("Configuración del hotel guardada correctamente");
       } else {
         setLastAction("Configuración guardada en modo local");
       }
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "No se pudo guardar la configuración del hotel en Supabase." });
+      setConnection({ status: "error", message: "No se pudo guardar la configuración del hotel." });
     }
   }
 
@@ -2560,13 +2561,13 @@ export default function HotelDailyControlApp() {
           }
         }
 
-        setLastAction("Canales de venta guardados en Supabase");
+        setLastAction("Canales de venta guardados correctamente");
       } else {
         setLastAction("Canales de venta guardados en modo local");
       }
     } catch (error) {
       console.error(error);
-      setConnection({ status: "error", message: "No se pudieron guardar los canales en Supabase." });
+      setConnection({ status: "error", message: "No se pudieron guardar los canales." });
     }
   }
 
@@ -2627,6 +2628,35 @@ export default function HotelDailyControlApp() {
     setLastAction(ok ? `Vista de impresión de incidencia abierta: habitación ${incident.room}` : "No se pudo abrir la ventana de impresión. Revisa el bloqueo de ventanas emergentes.");
   }
 
+  function exportBackup() {
+    const data = {
+      exportedAt: new Date().toISOString(),
+      app: "Hotel Daily Control",
+      hotel,
+      rooms,
+      roomCatalog,
+      roomDate,
+      roomDetails,
+      roomDetailsByDate,
+      reports,
+      incidents,
+      checklistTemplate,
+      tasks,
+      channels,
+      reservations,
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `hotel-daily-control-backup-${todayIso()}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setLastAction("Copia de seguridad descargada en formato JSON.");
+  }
+
   function resetDemo() {
     setHotel(defaultHotel);
     setRooms(defaultRooms);
@@ -2635,7 +2665,7 @@ export default function HotelDailyControlApp() {
     setIncidents(defaultIncidents);
     setTasks(emptyDefaultTasks(checklistTemplate));
     setChannels(defaultChannels);
-    setConnection({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Recarga la página para reconectar con Supabase" : "Modo local" });
+    setConnection({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Recarga la página para reconectar el sistema" : "Modo demostración" });
     try {
       window.localStorage.removeItem(STORAGE_KEY);
     } catch {
@@ -2726,7 +2756,7 @@ export default function HotelDailyControlApp() {
 
   const activeTabLabel = tabs.find(([id]) => id === active)?.[1] || "Dirección";
   const connectionTone = connection.status === "online" ? "green" : connection.status === "error" ? "red" : connection.status === "loading" ? "amber" : "slate";
-  const connectionIcon = connection.status === "online" ? "cloud" : "offline";
+  const connectionIcon = connection.status === "online" ? "check" : "offline";
 
   return (
     <div className="min-h-screen bg-[#f4f6fa] text-slate-900">
@@ -2744,7 +2774,8 @@ export default function HotelDailyControlApp() {
           </div>
 
           <div className="flex items-center gap-2">
-            <Badge tone={connectionTone}><span className="inline-flex items-center gap-1"><Icon name={connectionIcon} size={14} /> {connection.status === "online" ? "Supabase" : connection.status === "loading" ? "Conectando" : "Local"}</span></Badge>
+            <Badge tone={connectionTone}><span className="inline-flex items-center gap-1"><Icon name={connectionIcon} size={14} /> {connection.status === "online" ? "Sistema OK" : connection.status === "loading" ? "Preparando" : "Modo seguro"}</span></Badge>
+            <button className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50" type="button" onClick={exportBackup}><Icon name="copy" size={14} /> <span className="hidden sm:inline">Copia JSON</span><span className="sm:hidden">Copia</span></button>
             <button className="rounded-2xl border border-slate-300 bg-white p-2 text-slate-700 shadow-sm lg:hidden" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} aria-label="Abrir menú">
               <Icon name="menu" size={22} />
             </button>
@@ -2783,8 +2814,8 @@ export default function HotelDailyControlApp() {
               <div className="flex items-start gap-3 text-sm">
                 <Icon name={connectionIcon} size={20} />
                 <div>
-                  <b>Estado:</b> {connection.message}
-                  {connection.status === "online" && <p className="text-slate-600">Los partes e incidencias nuevos se guardarán en Supabase.</p>}
+                  <b>Estado del sistema:</b> {connection.message}
+                  {connection.status === "online" && <p className="text-slate-600">Los cambios se están guardando correctamente.</p>}
                   {lastAction && <p className="mt-1 font-semibold text-slate-700">Última acción: {lastAction}</p>}
                 </div>
               </div>
@@ -3623,7 +3654,7 @@ export default function HotelDailyControlApp() {
                   <button className={buttonDark} type="button" onClick={applyQuickRoomStatus}><Icon name="save" size={18} /> Aplicar</button>
                 </div>
                 <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                  El cambio se aplica a la foto diaria actual. Para dejarlo guardado en Supabase, pulsa después <b>Guardar estado</b> arriba.
+                  El cambio se aplica a la foto diaria actual. Para dejarlo guardado correctamente, pulsa después <b>Guardar estado</b> arriba.
                 </div>
               </Card>
 
@@ -4102,11 +4133,63 @@ export default function HotelDailyControlApp() {
             </div>
           )}
 
+          {active === "help" && (
+            <div className="space-y-5 sm:space-y-6">
+              <Card>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h2 className="text-lg font-bold sm:text-xl">Ayuda rápida del sistema</h2>
+                    <p className="text-sm text-slate-500">Guía práctica para recepción, dirección y mantenimiento.</p>
+                  </div>
+                  <Badge tone="blue">Manual interno</Badge>
+                </div>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><Icon name="chart" size={22} /><h3 className="mt-2 font-bold">Dirección</h3><p className="mt-1 text-sm text-slate-600">Consulta ocupación, ingresos del día, canales y recomendación de cupo Booking.</p></div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><Icon name="bed" size={22} /><h3 className="mt-2 font-bold">Habitaciones</h3><p className="mt-1 text-sm text-slate-600">Marca estados rápidos: disponible, sucia, pendiente, bloqueada o fuera de servicio.</p></div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><Icon name="calendar" size={22} /><h3 className="mt-2 font-bold">Calendario</h3><p className="mt-1 text-sm text-slate-600">Crea reservas por rango de fechas y evita solapes confirmados.</p></div>
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><Icon name="check" size={22} /><h3 className="mt-2 font-bold">Checklist</h3><p className="mt-1 text-sm text-slate-600">Cierra tareas por edificio para dejar constancia del trabajo diario.</p></div>
+                </div>
+              </Card>
+
+              <Card>
+                <h3 className="mb-4 font-bold">Flujo recomendado de recepción</h3>
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4"><h4 className="font-bold text-sky-950">1. Inicio de turno</h4><p className="mt-1 text-sm text-sky-900">Entrar en Habitaciones, escoger la fecha de hoy y revisar ocupadas, disponibles, sucias y fuera de servicio. Si hay estados antiguos, usar Recalcular desde reservas.</p></div>
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4"><h4 className="font-bold text-sky-950">2. Reservas</h4><p className="mt-1 text-sm text-sky-900">En Calendario se crean o editan reservas. Una reserva confirmada bloquea habitación; una tentativa queda como aviso hasta confirmación.</p></div>
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4"><h4 className="font-bold text-sky-950">3. Incidencias</h4><p className="mt-1 text-sm text-sky-900">Registrar averías, quejas, limpieza pendiente, pagos, problemas OTA o cambios relevantes. Marcar prioridad y responsable.</p></div>
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4"><h4 className="font-bold text-sky-950">4. Cierre</h4><p className="mt-1 text-sm text-sky-900">Completar Checklist por edificio y Parte diario. El parte se puede imprimir o copiar para dirección.</p></div>
+                </div>
+              </Card>
+
+              <Card>
+                <h3 className="mb-4 font-bold">Qué significan los estados</h3>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="rounded-2xl bg-emerald-50 p-4"><b>Disponible</b><p className="mt-1 text-sm text-slate-700">Habitación vendible y sin reserva activa.</p></div>
+                  <div className="rounded-2xl bg-slate-100 p-4"><b>Ocupada</b><p className="mt-1 text-sm text-slate-700">Habitación ocupada por reserva activa del calendario.</p></div>
+                  <div className="rounded-2xl bg-red-50 p-4"><b>Bloqueada / FDS</b><p className="mt-1 text-sm text-slate-700">No vendible por avería, mantenimiento o decisión interna.</p></div>
+                  <div className="rounded-2xl bg-amber-50 p-4"><b>Sucia</b><p className="mt-1 text-sm text-slate-700">Limpieza pendiente antes de poder venderla.</p></div>
+                  <div className="rounded-2xl bg-amber-50 p-4"><b>Pendiente</b><p className="mt-1 text-sm text-slate-700">Necesita revisión antes de quedar disponible.</p></div>
+                  <div className="rounded-2xl bg-sky-50 p-4"><b>Tentativa</b><p className="mt-1 text-sm text-slate-700">Reserva no confirmada: se ve como aviso, pero no bloquea como confirmada.</p></div>
+                </div>
+              </Card>
+
+              <Card>
+                <h3 className="mb-4 font-bold">Preguntas rápidas</h3>
+                <div className="space-y-3 text-sm text-slate-700">
+                  <p><b>¿Dónde veo si una habitación está ocupada?</b> En Habitaciones o en Calendario. Si viene del planning, aparecerá ocupada automáticamente en las fechas de estancia.</p>
+                  <p><b>¿Dónde veo los datos del cliente?</b> En Habitaciones, pulsa una habitación ocupada y aparecerá la reserva vinculada con teléfono, email, entrada, salida y canal.</p>
+                  <p><b>¿Qué pasa si intento reservar una habitación ocupada?</b> El sistema bloquea el solape si ambas reservas están confirmadas y propone habitaciones libres.</p>
+                  <p><b>¿Dónde veo la recomendación de Booking?</b> En Dirección, tarjeta Decisión de cupo Booking.</p>
+                </div>
+              </Card>
+            </div>
+          )}
+
           {active === "setup" && (
             <div className="space-y-5 sm:space-y-6">
               <Card>
                 <h2 className="text-lg font-bold sm:text-xl">Configuración del hotel</h2>
-                <p className="mb-5 text-sm text-slate-500">El hotel se carga desde Supabase si está conectado. Estas reglas se usan para generar recomendaciones automáticas en Dirección e Informes.</p>
+                <p className="mb-5 text-sm text-slate-500">Configuración principal del hotel. Estas reglas se usan para generar recomendaciones automáticas en Dirección e Informes.</p>
                 <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <Badge tone="purple">Reglas de decisión y alertas</Badge>
                   <button className={buttonDark} type="button" onClick={saveHotelConfig}><Icon name="save" size={18} /> Guardar configuración</button>
@@ -4260,10 +4343,9 @@ export default function HotelDailyControlApp() {
               </Card>
 
               <Card>
-                <h3 className="mb-3 font-bold">Conexión</h3>
+                <h3 className="mb-3 font-bold">Estado del sistema</h3>
                 <p className="text-sm text-slate-600"><b>Estado:</b> {connection.message}</p>
-                <p className="mt-2 text-sm text-slate-600"><b>Supabase URL detectada:</b> {SUPABASE_URL ? "Sí" : "No"}</p>
-                <p className="text-sm text-slate-600"><b>Publishable key detectada:</b> {SUPABASE_KEY ? "Sí" : "No"}</p>
+                <p className="mt-2 text-sm text-slate-600">Este bloque es informativo para administración. No muestra claves ni datos técnicos sensibles en pantalla.</p>
               </Card>
 
               <Card>
@@ -4280,8 +4362,17 @@ export default function HotelDailyControlApp() {
               </Card>
 
               <Card>
+                <h3 className="mb-3 font-bold">Copias de seguridad</h3>
+                <p className="mb-4 text-sm text-slate-500">Descarga una copia JSON de la información cargada en la app. Sirve como respaldo rápido antes de enseñar, modificar o desplegar.</p>
+                <button className={buttonDark} type="button" onClick={exportBackup}><Icon name="copy" size={18} /> Descargar copia JSON</button>
+                <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+                  <b>Recomendación:</b> en producción conviene complementar esto con backups automáticos del sistema y control de accesos por usuario.
+                </div>
+              </Card>
+
+              <Card>
                 <h3 className="mb-3 font-bold">Datos demo</h3>
-                <p className="mb-4 text-sm text-slate-500">Si Supabase falla, la app guarda datos localmente en este navegador.</p>
+                <p className="mb-4 text-sm text-slate-500">Si el sistema trabaja sin sincronización, la app guarda datos localmente en este navegador.</p>
                 <button className={buttonLight} type="button" onClick={resetDemo}><Icon name="trash" size={18} /> Restaurar datos demo</button>
               </Card>
             </div>
@@ -4375,7 +4466,7 @@ export default function HotelDailyControlApp() {
           <div className="mx-auto flex max-w-7xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-sm text-slate-700">
               <b>Cambios de habitaciones sin guardar</b>
-              <p className="text-xs text-slate-500">Foto diaria: {formatDateEs(roomDate)}. Guarda para conservar cambios en Supabase.</p>
+              <p className="text-xs text-slate-500">Foto diaria: {formatDateEs(roomDate)}. Guarda para conservar los cambios correctamente.</p>
             </div>
             <button className={buttonDark} type="button" onClick={saveRooms}><Icon name="save" size={18} /> Guardar estado</button>
           </div>
@@ -4611,7 +4702,7 @@ export default function HotelDailyControlApp() {
             )}
 
             <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm text-sky-900">
-              Este cambio actualiza la foto diaria en pantalla. Para persistirlo en Supabase, pulsa <b>Guardar estado</b> en Habitaciones.
+              Este cambio actualiza la foto diaria en pantalla. Para guardarlo correctamente, pulsa <b>Guardar estado</b> en Habitaciones.
             </div>
           </div>
         </Modal>
