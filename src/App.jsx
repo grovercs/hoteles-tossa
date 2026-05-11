@@ -1872,7 +1872,7 @@ function ManualOperativoRecepcion() {
   const activeSection = filteredSections.find((section) => section.id === activeId) || filteredSections[0] || MANUAL_OPERATIVO_SECCIONES[0];
 
   return (
-    <div className="space-y-5 sm:space-y-6">
+    <div className="space-y-5 touch-pan-y sm:space-y-6">
       <Card>
         <div className="grid gap-4 xl:grid-cols-[1fr_340px] xl:items-stretch">
           <div>
@@ -2458,10 +2458,10 @@ export default function HotelDailyControlApp() {
     setTouchStart(null);
 
     const isMobileWidth = typeof window !== "undefined" && window.innerWidth < 1024;
-    const isHorizontalGesture = Math.abs(deltaX) > 90 && Math.abs(deltaX) > Math.abs(deltaY) * 1.8;
-    const targetIsInteractive = touchStart.target?.closest?.("button, a, input, textarea, select, summary, [role='dialog']");
+    const isHorizontalGesture = Math.abs(deltaX) > 60 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5;
+    const targetBlocksSwipe = touchStart.target?.closest?.("a, input, textarea, select, summary, [role='dialog']");
 
-    if (!isMobileWidth || !isHorizontalGesture || targetIsInteractive || visibleTabs.length < 2) return;
+    if (!isMobileWidth || !isHorizontalGesture || targetBlocksSwipe || visibleTabs.length < 2) return;
 
     const currentIndex = visibleTabs.findIndex(([id]) => id === active);
     if (currentIndex < 0) return;
