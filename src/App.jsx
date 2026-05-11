@@ -1374,20 +1374,34 @@ function Field({ label, children }) {
   );
 }
 
-function Stat({ icon, label, value, hint }) {
-  return (
-    <Card>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm text-slate-500">{label}</p>
-          <p className="mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">{value}</p>
-          {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
-        </div>
-        <div className="rounded-2xl bg-slate-100 p-2 text-slate-700 sm:p-3">
-          <Icon name={icon} size={22} />
-        </div>
+function Stat({ icon, label, value, hint, onClick, actionLabel }) {
+  const content = (
+    <div className="flex items-start justify-between gap-3">
+      <div className="min-w-0">
+        <p className="text-sm text-slate-500">{label}</p>
+        <p className="mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">{value}</p>
+        {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+        {actionLabel && <p className="mt-3 text-xs font-bold text-[#2f5f7a]">{actionLabel} →</p>}
       </div>
-    </Card>
+      <div className="rounded-2xl bg-slate-100 p-2 text-slate-700 sm:p-3">
+        <Icon name={icon} size={22} />
+      </div>
+    </div>
+  );
+
+  if (!onClick) return <Card>{content}</Card>;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="block w-full rounded-2xl text-left transition hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-4 focus:ring-sky-100 active:scale-[0.99]"
+      aria-label={actionLabel || label}
+    >
+      <Card className="h-full cursor-pointer border-sky-100 hover:border-sky-300 hover:bg-sky-50/40">
+        {content}
+      </Card>
+    </button>
   );
 }
 
@@ -2065,6 +2079,7 @@ export default function HotelDailyControlApp() {
   const [reservationConflictCandidate, setReservationConflictCandidate] = useState(null);
   const [showChecklistHistory, setShowChecklistHistory] = useState(false);
   const [selectedCalendarDay, setSelectedCalendarDay] = useState(null);
+  const [touchStart, setTouchStart] = useState(null);
   const planningDays = useResponsivePlanningDays();
 
   useEffect(() => {
@@ -2088,6 +2103,16 @@ export default function HotelDailyControlApp() {
         }
         setAuthUser(authSession.user);
         setAuthProfile(loadedProfile);
+
+        const initialTabByRole = {
+          Administrador: "dashboard",
+          Dirección: "dashboard",
+          Recepción: "daily",
+          Limpieza: "tasks",
+          Mantenimiento: "incidents",
+        };
+
+        setActive(initialTabByRole[loadedProfile.role] || "daily");
 
         const hotels = await sb("hotels?select=*&order=created_at.asc&limit=1");
         const normalizedHotel = normalizeHotel(hotels?.[0]);
@@ -2419,6 +2444,34 @@ export default function HotelDailyControlApp() {
     window.setTimeout(() => {
       window.scrollTo({ top: 0, behavior: "smooth" });
     }, 0);
+  }
+
+  function openDashboardShortcut(tabId, message) {
+    goToTab(tabId);
+    if (message) setLastAction(message);
+  }
+
+  function handleContentSwipe(endX, endY) {
+    if (!touchStart) return;
+    const deltaX = endX - touchStart.x;
+    const deltaY = endY - touchStart.y;
+    setTouchStart(null);
+
+    const isMobileWidth = typeof window !== "undefined" && window.innerWidth < 1024;
+    const isHorizontalGesture = Math.abs(deltaX) > 90 && Math.abs(deltaX) > Math.abs(deltaY) * 1.8;
+    const targetIsInteractive = touchStart.target?.closest?.("button, a, input, textarea, select, summary, [role='dialog']");
+
+    if (!isMobileWidth || !isHorizontalGesture || targetIsInteractive || visibleTabs.length < 2) return;
+
+    const currentIndex = visibleTabs.findIndex(([id]) => id === active);
+    if (currentIndex < 0) return;
+
+    const nextIndex = deltaX < 0 ? currentIndex + 1 : currentIndex - 1;
+    if (nextIndex < 0 || nextIndex >= visibleTabs.length) return;
+
+    const [nextId, nextLabel] = visibleTabs[nextIndex];
+    goToTab(nextId);
+    setLastAction(`Navegación por gesto: ${nextLabel}`);
   }
 
   async function saveReport(e) {
@@ -3853,7 +3906,11 @@ export default function HotelDailyControlApp() {
           </nav>
         </aside>
 
-        <section className="space-y-5 sm:space-y-6">
+        <section
+          className="space-y-5 sm:space-y-6"
+          onTouchStart={(event) => setTouchStart({ x: event.touches[0].clientX, y: event.touches[0].clientY, target: event.target })}
+          onTouchEnd={(event) => handleContentSwipe(event.changedTouches[0].clientX, event.changedTouches[0].clientY)}
+        >
           {connection.message && (
             <Card className={connection.status === "error" ? "border-red-200 bg-red-50" : connection.status === "online" ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-white"}>
               <div className="flex items-start gap-3 text-sm">
@@ -3870,10 +3927,38 @@ export default function HotelDailyControlApp() {
           {active === "dashboard" && (
             <div className="space-y-5 sm:space-y-6">
               <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
-                <Stat icon="bed" label="Ocupación" value={`${occupancy}%`} hint={`${liveRooms.occupied}/${liveRooms.total} ocupadas · ${formatDateEs(roomDate)}`} />
-                <Stat icon="calendar" label="Disponibles" value={available} hint={`${liveRooms.blocked} bloqueadas/FDS`} />
-                <Stat icon="euro" label="Ingresos día" value={`${dashboardRevenue}${hotel.currency}`} hint={liveBookingSummary.occupiedCount ? "Calculado desde reservas activas" : `${latest.pendingPayments}${hotel.currency} pendientes`} />
-                <Stat icon="alert" label="Incidencias" value={openIncidents} hint="Abiertas" />
+                <Stat
+                  icon="bed"
+                  label="Ocupación"
+                  value={`${occupancy}%`}
+                  hint={`${liveRooms.occupied}/${liveRooms.total} ocupadas · ${formatDateEs(roomDate)}`}
+                  actionLabel="Ver habitaciones"
+                  onClick={() => openDashboardShortcut("rooms", "Detalle de ocupación abierto desde Dirección.")}
+                />
+                <Stat
+                  icon="calendar"
+                  label="Disponibles"
+                  value={available}
+                  hint={`${liveRooms.blocked} bloqueadas/FDS`}
+                  actionLabel="Ver disponibles"
+                  onClick={() => openDashboardShortcut("rooms", "Habitaciones disponibles abiertas desde Dirección.")}
+                />
+                <Stat
+                  icon="euro"
+                  label="Ingresos día"
+                  value={`${dashboardRevenue}${hotel.currency}`}
+                  hint={liveBookingSummary.occupiedCount ? "Calculado desde reservas activas" : `${latest.pendingPayments}${hotel.currency} pendientes`}
+                  actionLabel="Abrir parte diario"
+                  onClick={() => openDashboardShortcut("daily", "Parte diario abierto desde ingresos del día.")}
+                />
+                <Stat
+                  icon="alert"
+                  label="Incidencias"
+                  value={openIncidents}
+                  hint="Abiertas"
+                  actionLabel="Ver incidencias"
+                  onClick={() => openDashboardShortcut("incidents", "Incidencias abiertas desde Dirección.")}
+                />
               </div>
 
               <div className="grid gap-5 xl:grid-cols-[1.15fr_.85fr]">
