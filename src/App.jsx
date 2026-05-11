@@ -51,6 +51,7 @@ const defaultHotel = {
   bookingRiskLimit: 55,
   highOccupancyLimit: 80,
   lowOccupancyLimit: 45,
+  cashFund: 250,
 };
 
 const defaultRooms = {
@@ -463,6 +464,49 @@ async function sb(path, options = {}) {
   return text ? JSON.parse(text) : null;
 }
 
+function cashClosureFromRow(row) {
+  return {
+    id: row.id,
+    closureDate: row.closure_date || todayIso(),
+    closureName: row.closure_name || "Cierre de caja",
+    responsible: row.responsible || "",
+    reportRevenue: Number(row.report_revenue || 0),
+    openingCash: Number(row.opening_cash || 0),
+    cashSales: Number(row.cash_sales || 0),
+    cardSales: Number(row.card_sales || 0),
+    transferSales: Number(row.transfer_sales || 0),
+    otaSales: Number(row.ota_sales || 0),
+    otherIncome: Number(row.other_income || 0),
+    cashWithdrawals: Number(row.cash_withdrawals || 0),
+    expenseNotes: row.expense_notes || "",
+    cashCounted: Number(row.cash_counted || 0),
+    notes: row.notes || "",
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function cashClosureToRow(cashClosure, hotelId, userId = null) {
+  return {
+    hotel_id: hotelId,
+    closure_date: cashClosure.closureDate || todayIso(),
+    closure_name: cashClosure.closureName || "Cierre de caja",
+    responsible: cashClosure.responsible || "No indicado",
+    report_revenue: Number(cashClosure.reportRevenue) || 0,
+    opening_cash: Number(cashClosure.openingCash) || 0,
+    cash_sales: Number(cashClosure.cashSales) || 0,
+    card_sales: Number(cashClosure.cardSales) || 0,
+    transfer_sales: Number(cashClosure.transferSales) || 0,
+    ota_sales: Number(cashClosure.otaSales) || 0,
+    other_income: Number(cashClosure.otherIncome) || 0,
+    cash_withdrawals: Number(cashClosure.cashWithdrawals) || 0,
+    expense_notes: cashClosure.expenseNotes || "",
+    cash_counted: Number(cashClosure.cashCounted) || 0,
+    notes: cashClosure.notes || "",
+    created_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+}
 function normalizeHotel(row) {
   if (!row) return defaultHotel;
   return {
@@ -475,6 +519,7 @@ function normalizeHotel(row) {
     bookingRiskLimit: row.booking_risk_limit ?? 55,
     highOccupancyLimit: row.high_occupancy_limit ?? 80,
     lowOccupancyLimit: row.low_occupancy_limit ?? 45,
+    cashFund: Number(row.cash_fund ?? 250),
   };
 }
 
@@ -563,6 +608,7 @@ function hotelToRow(hotel) {
     booking_risk_limit: Number(hotel.bookingRiskLimit) || 55,
     high_occupancy_limit: Number(hotel.highOccupancyLimit) || 80,
     low_occupancy_limit: Number(hotel.lowOccupancyLimit) || 45,
+    cash_fund: Number(hotel.cashFund ?? 250) || 250,
   };
 }
 
@@ -938,6 +984,151 @@ function summarizeReservationForecast(reservations, days) {
   };
 }
 
+function calculateReservationMovementsForDate(reservations, dateValue) {
+  const validReservations = (reservations || []).filter((reservation) => reservation && !isReservationInactive(reservation));
+  const activeReservations = validReservations.filter((reservation) => isReservationActiveOnDate(reservation, dateValue));
+  const arrivals = validReservations.filter((reservation) => reservation.checkinDate === dateValue);
+  const departures = validReservations.filter((reservation) => reservation.checkoutDate === dateValue);
+  const cancellations = (reservations || []).filter((reservation) => reservation?.status === "Cancelada" && (reservation.checkinDate === dateValue || reservation.checkoutDate === dateValue || isReservationActiveOnDate(reservation, dateValue)));
+  const noShows = (reservations || []).filter((reservation) => reservation?.status === "No-show" && (reservation.checkinDate === dateValue || reservation.checkoutDate === dateValue || isReservationActiveOnDate(reservation, dateValue)));
+
+  const totals = {
+    arrivalsExpected: arrivals.length,
+    departuresExpected: departures.length,
+    newBookings: activeReservations.length,
+    directBookings: 0,
+    bookingBookings: 0,
+    expediaBookings: 0,
+    cancellations: cancellations.length,
+    noShows: noShows.length,
+    revenue: Math.round(activeReservations.reduce((total, reservation) => total + reservationNightlyRate(reservation), 0) * 100) / 100,
+  };
+
+  activeReservations.forEach((reservation) => {
+    const bucket = getChannelBucket(reservation.channel);
+    if (bucket === "directBookings") totals.directBookings += 1;
+    if (bucket === "bookingBookings") totals.bookingBookings += 1;
+    if (bucket === "expediaBookings") totals.expediaBookings += 1;
+  });
+
+  return totals;
+}
+
+function calculateCashClosureTotals(cashClosure) {
+  const openingCash = Number(cashClosure.openingCash) || 0;
+  const cashSales = Number(cashClosure.cashSales) || 0;
+  const cardSales = Number(cashClosure.cardSales) || 0;
+  const transferSales = Number(cashClosure.transferSales) || 0;
+  const otaSales = Number(cashClosure.otaSales) || 0;
+  const otherIncome = Number(cashClosure.otherIncome) || 0;
+  const cashWithdrawals = Number(cashClosure.cashWithdrawals) || 0;
+  const cashCounted = Number(cashClosure.cashCounted) || 0;
+  const totalCollected = Math.round((cashSales + cardSales + transferSales + otaSales + otherIncome) * 100) / 100;
+  const expectedCash = Math.round((openingCash + cashSales + otherIncome - cashWithdrawals) * 100) / 100;
+  const difference = Math.round((cashCounted - expectedCash) * 100) / 100;
+  return { openingCash, cashSales, cardSales, transferSales, otaSales, otherIncome, cashWithdrawals, cashCounted, totalCollected, expectedCash, difference };
+}
+
+const CASH_CLOSURE_NOTES_START = "--- CIERRE DE CAJA ---";
+const CASH_CLOSURE_NOTES_END = "--- FIN CIERRE DE CAJA ---";
+
+function getCashClosureStatus(totals) {
+  if (totals.difference === 0) return "CAJA CUADRADA";
+  return totals.difference > 0 ? "SOBRA CAJA" : "FALTA CAJA";
+}
+
+function buildCashClosureText(cashClosure, currency = "€") {
+  const totals = calculateCashClosureTotals(cashClosure);
+  const status = getCashClosureStatus(totals);
+  return [
+    CASH_CLOSURE_NOTES_START,
+    "Estado: " + status,
+    "Ingresos del parte: " + (Number(cashClosure.reportRevenue) || 0) + currency,
+    "Fondo inicial: " + totals.openingCash + currency,
+    "Cobros efectivo: " + totals.cashSales + currency,
+    "Cobros tarjeta: " + totals.cardSales + currency,
+    "Transferencias: " + totals.transferSales + currency,
+    "Cobros OTA / virtuales: " + totals.otaSales + currency,
+    "Otros ingresos en efectivo: " + totals.otherIncome + currency,
+    "Gastos / salidas de caja: " + totals.cashWithdrawals + currency,
+    cashClosure.expenseNotes ? "Concepto gastos / salidas: " + cashClosure.expenseNotes : "Concepto gastos / salidas: Sin gastos registrados.",
+    "Total cobrado: " + totals.totalCollected + currency,
+    "Efectivo esperado: " + totals.expectedCash + currency,
+    "Efectivo contado: " + totals.cashCounted + currency,
+    "Diferencia: " + totals.difference + currency,
+    cashClosure.notes ? "Notas caja: " + cashClosure.notes : "Notas caja: Sin observaciones.",
+    CASH_CLOSURE_NOTES_END,
+  ].join(String.fromCharCode(10));
+}
+
+function removeCashClosureBlockFromNotes(notes) {
+  const text = String(notes || "");
+  const start = text.indexOf(CASH_CLOSURE_NOTES_START);
+  const end = text.indexOf(CASH_CLOSURE_NOTES_END);
+  if (start === -1 || end === -1 || end < start) return text.trim();
+  const before = text.slice(0, start).trim();
+  const after = text.slice(end + CASH_CLOSURE_NOTES_END.length).trim();
+  return [before, after].filter(Boolean).join(String.fromCharCode(10) + String.fromCharCode(10)).trim();
+}
+
+function upsertCashClosureBlockInNotes(notes, closureText) {
+  const cleanNotes = removeCashClosureBlockFromNotes(notes);
+  return [cleanNotes, closureText].filter(Boolean).join(String.fromCharCode(10) + String.fromCharCode(10));
+}
+
+function buildSingleCashClosureLines(cashClosure, currency = "€") {
+  const totals = calculateCashClosureTotals(cashClosure);
+  return [
+    "Cierre: " + (cashClosure.closureName || "Cierre de caja"),
+    "Fecha: " + formatDateEs(cashClosure.closureDate || todayIso()),
+    "Responsable: " + (cashClosure.responsible || "No indicado"),
+    "Estado: " + getCashClosureStatus(totals),
+    "Ingresos del parte: " + (Number(cashClosure.reportRevenue) || 0) + currency,
+    "Fondo fijo: " + totals.openingCash + currency,
+    "Cobros efectivo: " + totals.cashSales + currency,
+    "Cobros tarjeta: " + totals.cardSales + currency,
+    "Transferencias: " + totals.transferSales + currency,
+    "Cobros OTA / virtuales: " + totals.otaSales + currency,
+    "Otros ingresos en efectivo: " + totals.otherIncome + currency,
+    "Gastos / salidas de caja: " + totals.cashWithdrawals + currency,
+    cashClosure.expenseNotes ? "Concepto gastos / salidas: " + cashClosure.expenseNotes : "Concepto gastos / salidas: Sin gastos registrados.",
+    "Total cobrado clasificado: " + totals.totalCollected + currency,
+    "Efectivo esperado: " + totals.expectedCash + currency,
+    "Efectivo contado: " + totals.cashCounted + currency,
+    "Diferencia: " + totals.difference + currency,
+    cashClosure.notes ? "Notas caja: " + cashClosure.notes : "Notas caja: Sin observaciones.",
+  ];
+}
+
+function buildCashClosuresHistoryText(closures, dateValue, currency = "€") {
+  const dayClosures = (closures || []).filter((closure) => closure.closureDate === dateValue);
+  if (!dayClosures.length) return "";
+  const blocks = dayClosures.map((closure, index) => ["CIERRE " + (index + 1), ...buildSingleCashClosureLines(closure, currency)].join(String.fromCharCode(10)));
+  return [CASH_CLOSURE_NOTES_START, ...blocks, CASH_CLOSURE_NOTES_END].join(String.fromCharCode(10) + String.fromCharCode(10));
+}
+
+function summarizeCashClosuresForDate(closures, dateValue) {
+  return (closures || []).filter((closure) => closure.closureDate === dateValue).reduce((summary, closure) => {
+    const totals = calculateCashClosureTotals(closure);
+    summary.count += 1;
+    summary.totalCollected = Math.round((summary.totalCollected + totals.totalCollected) * 100) / 100;
+    summary.totalDifference = Math.round((summary.totalDifference + totals.difference) * 100) / 100;
+    summary.cashSales = Math.round((summary.cashSales + totals.cashSales) * 100) / 100;
+    summary.cardSales = Math.round((summary.cardSales + totals.cardSales) * 100) / 100;
+    return summary;
+  }, { count: 0, totalCollected: 0, totalDifference: 0, cashSales: 0, cardSales: 0 });
+}
+
+function getCashClosureDisplayName(closure) {
+  return closure?.closureName || "Cierre de caja";
+}
+function cleanCashRecommendation(recommendation) {
+  return String(recommendation || "")
+    .split(String.fromCharCode(10))
+    .filter((line) => !line.trim().toLowerCase().startsWith("revisar diferencia de caja"))
+    .join(String.fromCharCode(10))
+    .trim();
+}
 function normalizeChannelName(value) {
   return String(value || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
@@ -1143,6 +1334,15 @@ RECOMENDACIONES AUTOMÁTICAS
 ${recommendations.map((r) => `- ${r.title}: ${r.text}`).join("\n")}`;
 }
 
+function getOperationalAreaNames(roomAreaSummaries = []) {
+  const names = (roomAreaSummaries || []).map((area) => area.area).filter(Boolean);
+  const defaults = ["L’Hostalet de Tossa", "El Bergantí"];
+  return names.length ? names : defaults;
+}
+
+function getOperationalAreaTone(index) {
+  return index % 2 === 0 ? "border-sky-200 bg-sky-50" : "border-emerald-200 bg-emerald-50";
+}
 function buildSingleReportText({ hotel, report }) {
   const currency = hotel.currency || "€";
   return `INFORME DIARIO DE RECEPCIÓN
@@ -2040,6 +2240,25 @@ export default function HotelDailyControlApp() {
     notes: "",
     recommendation: "",
   });
+  const [cashFund, setCashFund] = useState(Number(stored?.cashFund ?? stored?.hotel?.cashFund ?? 250));
+  const [cashClosure, setCashClosure] = useState({
+    id: "",
+    closureDate: todayIso(),
+    closureName: "Cierre diario",
+    responsible: "",
+    openingCash: stored?.cashFund ?? 250,
+    cashSales: 0,
+    cardSales: 0,
+    transferSales: 0,
+    otaSales: 0,
+    otherIncome: 0,
+    cashWithdrawals: 0,
+    expenseNotes: "",
+    cashCounted: 0,
+    notes: "",
+  });
+  const [cashClosureModal, setCashClosureModal] = useState(null);
+  const [cashClosures, setCashClosures] = useState(stored?.cashClosures || []);
   const [incidentForm, setIncidentForm] = useState({ room: "", type: "Cliente", priority: "Media", status: "Abierta", owner: "Recepción", text: "" });
   const [editingReportId, setEditingReportId] = useState(null);
   const [editingOriginalReport, setEditingOriginalReport] = useState(null);
@@ -2117,9 +2336,11 @@ export default function HotelDailyControlApp() {
         const hotels = await sb("hotels?select=*&order=created_at.asc&limit=1");
         const normalizedHotel = normalizeHotel(hotels?.[0]);
         setHotel(normalizedHotel);
+        setCashFund(Number(normalizedHotel.cashFund ?? 250));
+        setCashClosure((current) => ({ ...current, openingCash: Number(normalizedHotel.cashFund ?? 250), cashCounted: current.cashCounted || Number(normalizedHotel.cashFund ?? 250) }));
         setForm((old) => ({ ...old, shift: normalizedHotel.receptionHours || old.shift }));
 
-        const [remoteReports, remoteIncidents, remoteRooms, remoteSignoffs, remoteChannels, remoteReservations, remoteRoomCatalog] = await Promise.all([
+        const [remoteReports, remoteIncidents, remoteRooms, remoteSignoffs, remoteChannels, remoteReservations, remoteRoomCatalog, remoteCashClosures] = await Promise.all([
           sb(`daily_reports?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=50`),
           sb(`incidents?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=100`),
           sb(`room_status?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.desc&limit=1`),
@@ -2127,10 +2348,12 @@ export default function HotelDailyControlApp() {
           sb(`sales_channels?select=*&hotel_id=eq.${normalizedHotel.id}&order=created_at.asc`),
           sb(`reservations?select=*&hotel_id=eq.${normalizedHotel.id}&order=checkin_date.asc,created_at.asc&limit=300`),
           sb(`room_catalog?select=*&hotel_id=eq.${normalizedHotel.id}&is_active=eq.true&order=sort_order.asc,room_number.asc`),
+          sb(`cash_closures?select=*&hotel_id=eq.${normalizedHotel.id}&order=closure_date.desc,created_at.desc&limit=200`),
         ]);
 
         setReports(remoteReports?.length ? remoteReports.map(reportFromRow) : []);
         setIncidents(remoteIncidents?.length ? remoteIncidents.map(incidentFromRow) : []);
+        setCashClosures(remoteCashClosures?.length ? remoteCashClosures.map(cashClosureFromRow) : []);
         if (remoteRooms?.length) {
           const loadedRooms = roomStatusFromRow(remoteRooms[0]);
           setRooms(loadedRooms);
@@ -2189,8 +2412,8 @@ export default function HotelDailyControlApp() {
   }, [authSession?.access_token]);
 
   useEffect(() => {
-    writeLocal({ hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, checklistHistory, channels, reservations });
-  }, [hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, checklistHistory, channels, reservations]);
+    writeLocal({ hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, checklistHistory, channels, reservations, cashFund, cashClosures });
+  }, [hotel, rooms, roomCatalog, roomDate, roomDetails, roomDetailsByDate, reports, incidents, checklistTemplate, tasks, checklistHistory, channels, reservations, cashFund, cashClosures]);
 
   const latest = reports[0] || defaultReports[0];
   const roomInventory = useMemo(() => {
@@ -2213,6 +2436,9 @@ export default function HotelDailyControlApp() {
   const openIncidents = incidents.filter((i) => i.status !== "Cerrada").length;
   const tasksDone = tasks.filter((task) => task.done).length;
   const taskProgress = Math.round((tasksDone / Math.max(tasks.length, 1)) * 100);
+  const cashClosureTotals = useMemo(() => calculateCashClosureTotals(cashClosure), [cashClosure]);
+  const cashClosuresForFormDate = useMemo(() => (cashClosures || []).filter((closure) => closure.closureDate === (form.date || todayIso())), [cashClosures, form.date]);
+  const cashClosuresSummaryForFormDate = useMemo(() => summarizeCashClosuresForDate(cashClosures, form.date || todayIso()), [cashClosures, form.date]);
 
   const recommendations = useMemo(() => createRecommendations({ occupancy, bookingShare, directShare, blockedRooms: Number(liveRooms.blocked) || 0, pendingPayments: Number(latest?.pendingPayments) || 0, hotel }), [occupancy, bookingShare, directShare, liveRooms.blocked, latest, hotel]);
   const selfTests = useMemo(() => runSelfTests(), []);
@@ -3234,6 +3460,170 @@ export default function HotelDailyControlApp() {
     setLastAction(`Producción aplicada al parte diario desde habitaciones: ${values.newBookings} ocupadas · ${values.revenue}${hotel.currency}`);
   }
 
+  function applyReservationMovementsToReport() {
+    const values = calculateReservationMovementsForDate(reservations, form.date || todayIso());
+    setForm((current) => ({
+      ...current,
+      arrivalsExpected: values.arrivalsExpected,
+      departuresExpected: values.departuresExpected,
+      newBookings: values.newBookings,
+      directBookings: values.directBookings,
+      bookingBookings: values.bookingBookings,
+      expediaBookings: values.expediaBookings,
+      cancellations: values.cancellations,
+      noShows: values.noShows,
+      revenue: values.revenue,
+    }));
+    setLastAction(`Movimientos calculados desde reservas para ${formatDateEs(form.date || todayIso())}: ${values.arrivalsExpected} llegadas, ${values.departuresExpected} salidas, ${values.revenue}${hotel.currency} estimados.`);
+  }
+
+  function updateCashClosureField(key, value) {
+    setCashClosure((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateCashFund(value) {
+    const parsedValue = Number(value) || 0;
+    setCashFund(parsedValue);
+    setHotel((current) => ({ ...current, cashFund: parsedValue }));
+    setCashClosure((current) => ({ ...current, openingCash: parsedValue }));
+    setLastAction(`Fondo fijo de caja actualizado: ${parsedValue}${hotel.currency}`);
+  }
+
+  async function applyCashClosureToReport() {
+    const closureDate = form.date || todayIso();
+    const localClosureId = cashClosure.id || `cash-closure-${Date.now()}`;
+    const baseClosurePayload = {
+      ...cashClosure,
+      id: localClosureId,
+      closureDate,
+      closureName: cashClosure.closureName || `Cierre ${cashClosuresForFormDate.length + 1}` ,
+      responsible: cashClosure.responsible || form.manager || authProfile?.fullName || "No indicado",
+      reportRevenue: Number(form.revenue) || 0,
+      updatedAt: new Date().toISOString(),
+      createdAt: cashClosure.createdAt || new Date().toISOString(),
+    };
+
+    let savedClosure = baseClosurePayload;
+    const shouldSyncCashClosure = canUseRemote(connection, hotel, authSession);
+
+    try {
+      if (shouldSyncCashClosure) {
+        const isRemoteId = baseClosurePayload.id && !String(baseClosurePayload.id).startsWith("cash-closure-") && !String(baseClosurePayload.id).startsWith("local-");
+        if (isRemoteId) {
+          const updated = await sb(`cash_closures?id=eq.${baseClosurePayload.id}&select=*`, { method: "PATCH", body: JSON.stringify(cashClosureToRow(baseClosurePayload, hotel.id, authSession?.user?.id || null)) });
+          if (!updated?.[0]) throw new Error("Supabase no devolvió el cierre de caja actualizado.");
+          savedClosure = cashClosureFromRow(updated[0]);
+        } else {
+          const payload = cashClosureToRow(baseClosurePayload, hotel.id, authSession?.user?.id || null);
+          const inserted = await sb("cash_closures?select=*", { method: "POST", body: JSON.stringify(payload) });
+          if (!inserted?.[0]) throw new Error("Supabase no devolvió el cierre de caja guardado.");
+          savedClosure = cashClosureFromRow(inserted[0]);
+        }
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: `No se pudo sincronizar el cierre de caja: ${error?.message || "error desconocido"}. Queda guardado localmente.` });
+      savedClosure = baseClosurePayload;
+    }
+
+    const nextClosures = cashClosures.some((closure) => closure.id === savedClosure.id || closure.id === baseClosurePayload.id)
+      ? cashClosures.map((closure) => (closure.id === savedClosure.id || closure.id === baseClosurePayload.id) ? savedClosure : closure)
+      : [savedClosure, ...cashClosures];
+
+    const closureText = buildCashClosuresHistoryText(nextClosures, closureDate, hotel.currency || "€");
+    const cleanRecommendation = cleanCashRecommendation(form.recommendation);
+    const totals = calculateCashClosureTotals(savedClosure);
+    const differenceLine = totals.difference === 0 ? "" : `Revisar diferencia de caja: ${totals.difference}${hotel.currency}`;
+
+    setCashClosures(nextClosures);
+    setCashClosure(savedClosure);
+    setCashClosureModal(savedClosure);
+    setForm((current) => ({
+      ...current,
+      notes: upsertCashClosureBlockInNotes(current.notes, closureText),
+      recommendation: [cleanRecommendation, differenceLine].filter(Boolean).join(String.fromCharCode(10)),
+    }));
+
+    setLastAction(totals.difference === 0 ? `Cierre guardado: ${savedClosure.closureName}. Caja cuadrada.` : `Cierre guardado: ${savedClosure.closureName}. Diferencia ${totals.difference}${hotel.currency}.`);
+  }
+
+  function startNewCashClosure() {
+    const nextNumber = cashClosuresForFormDate.length + 1;
+    setCashClosure({
+      id: "",
+      closureDate: form.date || todayIso(),
+      closureName: nextNumber <= 1 ? "Cierre diario" : `Cierre parcial ${nextNumber}` ,
+      responsible: form.manager || authProfile?.fullName || "",
+      openingCash: cashFund,
+      cashSales: 0,
+      cardSales: 0,
+      transferSales: 0,
+      otaSales: 0,
+      otherIncome: 0,
+      cashWithdrawals: 0,
+      expenseNotes: "",
+      cashCounted: cashFund,
+      notes: "",
+    });
+    setCashClosureModal(null);
+    setLastAction(`Nuevo cierre preparado para ${formatDateEs(form.date || todayIso())}.`);
+  }
+
+  function editCashClosure(closure) {
+    setCashClosure({
+      id: closure.id || "",
+      closureDate: closure.closureDate || form.date || todayIso(),
+      closureName: closure.closureName || "Cierre de caja",
+      responsible: closure.responsible || form.manager || authProfile?.fullName || "",
+      openingCash: closure.openingCash ?? cashFund,
+      cashSales: closure.cashSales || 0,
+      cardSales: closure.cardSales || 0,
+      transferSales: closure.transferSales || 0,
+      otaSales: closure.otaSales || 0,
+      otherIncome: closure.otherIncome || 0,
+      cashWithdrawals: closure.cashWithdrawals || 0,
+      expenseNotes: closure.expenseNotes || "",
+      cashCounted: closure.cashCounted || 0,
+      notes: closure.notes || "",
+      createdAt: closure.createdAt,
+      reportRevenue: closure.reportRevenue || Number(form.revenue) || 0,
+    });
+    setCashClosureModal(null);
+    setLastAction(`Editando cierre de caja: ${getCashClosureDisplayName(closure)}.`);
+    window.setTimeout(() => document.getElementById("cash-closure-card")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  async function deleteCashClosure(id) {
+    const closureToDelete = cashClosures.find((closure) => closure.id === id);
+    if (!closureToDelete) return;
+    const closureDate = closureToDelete.closureDate || form.date || todayIso();
+    const shouldDeleteRemote = canUseRemote(connection, hotel, authSession)
+      && !String(id).startsWith("cash-closure-")
+      && !String(id).startsWith("local-");
+
+    try {
+      if (shouldDeleteRemote) {
+        const deleted = await sb(`cash_closures?id=eq.${id}&select=*`, { method: "DELETE", headers: { Prefer: "return=representation" } });
+        if (!deleted || deleted.length === 0) throw new Error("No se eliminó ninguna fila. Revisa permisos RLS de borrado.");
+      }
+
+      const nextClosures = cashClosures.filter((closure) => closure.id !== id);
+      const closureText = buildCashClosuresHistoryText(nextClosures, closureDate, hotel.currency || "€");
+      setCashClosures(nextClosures);
+      setCashClosureModal(null);
+      setForm((current) => ({
+        ...current,
+        notes: upsertCashClosureBlockInNotes(current.notes, closureText),
+        recommendation: cleanCashRecommendation(current.recommendation),
+      }));
+      setLastAction(`Cierre de caja eliminado: ${getCashClosureDisplayName(closureToDelete)}.`);
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: `No se pudo borrar el cierre de caja en Supabase: ${error?.message || "error desconocido"}` });
+      setLastAction(`No se pudo borrar el cierre de caja: ${error?.message || "revisa permisos"}`);
+    }
+  }
+
   function findReservationConflict(draft, ignoreId = null) {
     return reservations.find((reservation) => reservation.id !== ignoreId && reservationsBlockingOverlap(draft, reservation));
   }
@@ -3432,6 +3822,23 @@ export default function HotelDailyControlApp() {
     goToTab("rooms");
   }
 
+  async function saveCashFundConfig() {
+    const parsedValue = Number(cashFund) || 0;
+    setHotel((current) => ({ ...current, cashFund: parsedValue }));
+
+    try {
+      if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
+        const updated = await sb(`hotels?id=eq.${hotel.id}&select=*`, { method: "PATCH", body: JSON.stringify({ cash_fund: parsedValue }) });
+        if (updated?.[0]) setHotel(normalizeHotel(updated[0]));
+        setLastAction(`Fondo fijo de caja guardado en Supabase: ${parsedValue}${hotel.currency}`);
+      } else {
+        setLastAction(`Fondo fijo de caja guardado en modo local: ${parsedValue}${hotel.currency}`);
+      }
+    } catch (error) {
+      console.error(error);
+      setConnection({ status: "error", message: "No se pudo guardar el fondo fijo de caja en Supabase. Queda guardado localmente." });
+    }
+  }
   async function saveHotelConfig() {
     try {
       if (connection.status === "online" && hotel.id !== DEMO_HOTEL_ID) {
@@ -3677,6 +4084,8 @@ export default function HotelDailyControlApp() {
       tasks,
       channels,
       reservations,
+      cashFund,
+      cashClosures,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -4221,7 +4630,16 @@ export default function HotelDailyControlApp() {
               </Card>
 
               <Card>
-                <h3 className="mb-4 font-bold">Movimientos y ventas</h3>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Movimientos y ventas</h3>
+                    <p className="text-sm text-slate-500">Puedes rellenarlo manualmente o calcular la previsión desde el planning de reservas.</p>
+                  </div>
+                  <button className={buttonLight} type="button" onClick={applyReservationMovementsToReport}><Icon name="sync" size={18} /> Calcular desde reservas del día</button>
+                </div>
+                <div className="mb-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+                  <b>Automático:</b> llegadas previstas, salidas previstas, reservas activas por canal, cancelaciones, no-shows e ingresos estimados se calculan desde el Calendario para la fecha del parte. Llegadas realizadas y salidas realizadas siguen siendo manuales hasta que tengamos estados reales de check-in/check-out.
+                </div>
                 <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
                   {[
                     ["Llegadas previstas", "arrivalsExpected"], ["Llegadas realizadas", "arrivalsDone"],
@@ -4235,6 +4653,71 @@ export default function HotelDailyControlApp() {
                       <input className={inputStyle} type="number" value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
                     </Field>
                   ))}
+                </div>
+              </Card>
+
+              <Card>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Cierre de caja rápido</h3>
+                    <p className="text-sm text-slate-500">Comprueba si el efectivo contado coincide con el efectivo esperado y añade el resumen al parte diario.</p>
+                  </div>
+                  <Badge tone={cashClosureTotals.difference === 0 ? "green" : cashClosureTotals.difference > 0 ? "amber" : "red"}>{cashClosureTotals.difference === 0 ? "Caja cuadrada" : `Diferencia ${cashClosureTotals.difference}${hotel.currency}`}</Badge>
+                </div>
+                <div id="cash-closure-card" className="mb-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Field label="Fecha del cierre"><input className={inputStyle} type="date" value={cashClosure.closureDate || form.date || todayIso()} onChange={(e) => updateCashClosureField("closureDate", e.target.value)} /></Field>
+                  <Field label="Nombre del cierre / turno"><input className={inputStyle} value={cashClosure.closureName || ""} onChange={(e) => updateCashClosureField("closureName", e.target.value)} placeholder="Ej.: Cierre mañana, Cierre tarde, Cambio de turno" /></Field>
+                  <Field label="Responsable de caja"><select className={inputStyle} value={cashClosure.responsible || ""} onChange={(e) => updateCashClosureField("responsible", e.target.value)}><option value="">Seleccionar responsable</option>{employeeOptions.map((name) => <option key={name} value={name}>{name}</option>)}</select></Field>
+                  <div className="flex items-end"><button className={buttonLight} type="button" onClick={startNewCashClosure}><Icon name="plus" size={18} /> Nuevo cierre</button></div>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                  <Field label={`Fondo fijo aplicado (${hotel.currency})`}><input className={inputStyle} type="number" value={cashFund} onChange={(e) => updateCashFund(e.target.value)} /></Field>
+                  <Field label={`Cobros efectivo (${hotel.currency})`}><input className={inputStyle} type="number" value={cashClosure.cashSales} onChange={(e) => updateCashClosureField("cashSales", e.target.value)} /></Field>
+                  <Field label={`Cobros tarjeta (${hotel.currency})`}><input className={inputStyle} type="number" value={cashClosure.cardSales} onChange={(e) => updateCashClosureField("cardSales", e.target.value)} /></Field>
+                  <Field label={`Transferencias (${hotel.currency})`}><input className={inputStyle} type="number" value={cashClosure.transferSales} onChange={(e) => updateCashClosureField("transferSales", e.target.value)} /></Field>
+                  <Field label={`OTA / virtuales (${hotel.currency})`}><input className={inputStyle} type="number" value={cashClosure.otaSales} onChange={(e) => updateCashClosureField("otaSales", e.target.value)} /></Field>
+                  <Field label={`Otros ingresos efectivo (${hotel.currency})`}><input className={inputStyle} type="number" value={cashClosure.otherIncome} onChange={(e) => updateCashClosureField("otherIncome", e.target.value)} /></Field>
+                  <Field label={`Gastos / salidas de caja (${hotel.currency})`}><input className={inputStyle} type="number" value={cashClosure.cashWithdrawals} onChange={(e) => updateCashClosureField("cashWithdrawals", e.target.value)} /></Field>
+                  <Field label={`Efectivo contado (${hotel.currency})`}><input className={inputStyle} type="number" value={cashClosure.cashCounted} onChange={(e) => updateCashClosureField("cashCounted", e.target.value)} /></Field>
+                </div>
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Total cobrado</p><p className="font-bold">{cashClosureTotals.totalCollected}{hotel.currency}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Efectivo esperado</p><p className="font-bold">{cashClosureTotals.expectedCash}{hotel.currency}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Efectivo contado</p><p className="font-bold">{cashClosureTotals.cashCounted}{hotel.currency}</p></div>
+                  <div className={cls("rounded-2xl p-3", cashClosureTotals.difference === 0 ? "bg-emerald-50" : cashClosureTotals.difference > 0 ? "bg-amber-50" : "bg-red-50")}><p className="text-xs text-slate-500">Diferencia</p><p className="font-bold">{cashClosureTotals.difference}{hotel.currency}</p></div>
+                </div>
+                <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+                  <b>Ingresos del parte usados como referencia:</b> {Number(form.revenue) || 0}{hotel.currency}. El cierre de caja no cambia este importe; sirve para clasificar cobros y cuadrar el efectivo físico contra el fondo fijo. Si se paga un gasto desde caja, pon el importe en gastos/salidas y explica el concepto.
+                </div>
+                <div className="mt-4 grid gap-4">
+                  <Field label="Concepto de gastos / salidas"><textarea className={inputStyle} rows={2} value={cashClosure.expenseNotes || ""} onChange={(e) => updateCashClosureField("expenseNotes", e.target.value)} placeholder="Ej.: compra urgente de pilas, taxi cliente, material limpieza, devolución en efectivo..." /></Field>
+                  <Field label="Notas de caja"><textarea className={inputStyle} rows={2} value={cashClosure.notes} onChange={(e) => updateCashClosureField("notes", e.target.value)} placeholder="Ej.: TPV revisado, retirada entregada a dirección, diferencia por cambio pendiente..." /></Field>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-slate-500">Al aplicar, se guarda el cierre en Observaciones sin modificar los Ingresos del parte. Si hay diferencia de efectivo, se añade aviso en Recomendación.</p>
+                    <button className={buttonDark} type="button" onClick={applyCashClosureToReport}><Icon name="save" size={18} /> Guardar / actualizar cierre</button>
+                  </div>
+                </div>
+                <div className="mt-5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h4 className="font-bold">Histórico de cierres de caja del día</h4>
+                      <p className="text-sm text-slate-500">{cashClosuresSummaryForFormDate.count} cierres · Total clasificado {cashClosuresSummaryForFormDate.totalCollected}{hotel.currency} · Diferencia acumulada {cashClosuresSummaryForFormDate.totalDifference}{hotel.currency}</p>
+                    </div>
+                    <Badge tone={cashClosuresSummaryForFormDate.totalDifference === 0 ? "green" : "amber"}>{cashClosuresSummaryForFormDate.count ? "Con cierres" : "Sin cierres"}</Badge>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    {cashClosuresForFormDate.map((closure) => {
+                      const totals = calculateCashClosureTotals(closure);
+                      return (
+                        <div key={closure.id} className="rounded-2xl border border-slate-200 bg-white p-3">
+                          <div className="mb-2 flex items-center justify-between gap-2"><span className="font-bold">{getCashClosureDisplayName(closure)}</span><Badge tone={totals.difference === 0 ? "green" : totals.difference > 0 ? "amber" : "red"}>{totals.difference}{hotel.currency}</Badge></div>
+                          <p className="text-xs text-slate-500">{closure.responsible || "Sin responsable"} · Total {totals.totalCollected}{hotel.currency} · Efectivo {totals.cashSales}{hotel.currency}</p>
+                          <div className="mt-3 flex flex-nowrap gap-1 overflow-x-auto pb-1"><button className={buttonTiny} type="button" onClick={() => setCashClosureModal(closure)}><Icon name="view" size={13} /> Ver</button><button className={buttonTiny} type="button" onClick={() => editCashClosure(closure)}><Icon name="edit" size={13} /> Editar</button><button className={buttonTinyDanger} type="button" onClick={() => deleteCashClosure(closure.id)}><Icon name="trash" size={13} /> Borrar</button></div>
+                        </div>
+                      );
+                    })}
+                    {cashClosuresForFormDate.length === 0 && <p className="rounded-2xl bg-white p-3 text-sm text-slate-500">Todavía no hay cierres guardados para esta fecha.</p>}
+                  </div>
                 </div>
               </Card>
 
@@ -4254,6 +4737,75 @@ export default function HotelDailyControlApp() {
                       <Icon name="cancel" size={18} /> Cancelar edición
                     </button>
                   )}
+                </div>
+              </Card>
+
+              <Card>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Últimos partes diarios guardados</h3>
+                    <p className="text-sm text-slate-500">Consulta rápida desde Parte diario. El histórico completo sigue estando en Informes.</p>
+                  </div>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Badge tone="blue">{reports.length} partes</Badge>
+                    <button className={buttonLight} type="button" onClick={() => goToTab("reports")}><Icon name="file" size={18} /> Ver histórico completo</button>
+                  </div>
+                </div>
+
+                <div className="grid gap-4">
+                  {reports.slice(0, 4).map((report) => (
+                    <div key={`daily-quick-report-${report.id}`} className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+                      <div className="border-b border-slate-200 bg-slate-50 p-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div>
+                            <div className="mb-2 flex flex-wrap items-center gap-2">
+                              <Badge tone="blue">Parte diario</Badge>
+                              <Badge tone={Number(report.pendingPayments) > 0 ? "amber" : "green"}>{Number(report.pendingPayments) > 0 ? `${report.pendingPayments}${hotel.currency} pendiente` : "Cobros OK"}</Badge>
+                            </div>
+                            <h4 className="text-lg font-bold text-slate-900">{formatDateEs(report.date)}</h4>
+                            <p className="text-sm text-slate-600">Responsable: <b>{report.manager || "No indicado"}</b> · Turno: {report.shift || "No indicado"}</p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4 lg:min-w-[420px]">
+                            <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">Ingresos</p><p className="font-bold">{report.revenue}{hotel.currency}</p></div>
+                            <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">Reservas</p><p className="font-bold">{report.newBookings}</p></div>
+                            <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">Llegadas</p><p className="font-bold">{report.arrivalsDone}/{report.arrivalsExpected}</p></div>
+                            <div className="rounded-2xl bg-white p-3 ring-1 ring-slate-200"><p className="text-xs text-slate-500">Salidas</p><p className="font-bold">{report.departuresDone}/{report.departuresExpected}</p></div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 p-4 lg:grid-cols-2">
+                        {getOperationalAreaNames(roomAreaSummaries).slice(0, 2).map((areaName, index) => (
+                          <div key={`${report.id}-${areaName}`} className={cls("rounded-2xl border p-4", getOperationalAreaTone(index))}>
+                            <div className="mb-3 flex items-center justify-between gap-2">
+                              <h5 className="font-bold text-slate-900">{areaName}</h5>
+                              <span className="rounded-full bg-white/80 px-3 py-1 text-xs font-bold text-slate-600 ring-1 ring-slate-200">Bloque operativo</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 text-sm">
+                              <div className="rounded-xl bg-white/80 p-2"><p className="text-xs text-slate-500">Llegadas previstas</p><p className="font-bold">{report.arrivalsExpected}</p></div>
+                              <div className="rounded-xl bg-white/80 p-2"><p className="text-xs text-slate-500">Salidas previstas</p><p className="font-bold">{report.departuresExpected}</p></div>
+                              <div className="rounded-xl bg-white/80 p-2"><p className="text-xs text-slate-500">Cancelaciones</p><p className="font-bold">{report.cancellations}</p></div>
+                              <div className="rounded-xl bg-white/80 p-2"><p className="text-xs text-slate-500">No-shows</p><p className="font-bold">{report.noShows}</p></div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="border-t border-slate-200 bg-white p-4">
+                        <div className="mb-3 grid gap-3 lg:grid-cols-2">
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Incidencias del turno</p><p className="mt-1 line-clamp-2 text-sm text-slate-700">{report.incidents || "Sin incidencias relevantes."}</p></div>
+                          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3"><p className="text-xs font-bold uppercase tracking-wide text-slate-500">Recomendación</p><p className="mt-1 line-clamp-2 text-sm text-slate-700">{report.recommendation || "Sin recomendación."}</p></div>
+                        </div>
+                        <div className="flex flex-nowrap gap-1 overflow-x-auto pb-1">
+                          <button className={buttonTiny} type="button" onClick={() => viewReport(report)}><Icon name="view" size={13} /> Ver</button>
+                          <button className={buttonTiny} type="button" onClick={() => printSingleReport(report)}><Icon name="print" size={13} /> Imprimir</button>
+                          <button className={buttonTiny} type="button" onClick={() => editReport(report)}><Icon name="edit" size={13} /> Editar</button>
+                          <button className={buttonTinyDanger} type="button" onClick={() => askDeleteReport(report)}><Icon name="trash" size={13} /> Borrar</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {reports.length === 0 && <p className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">Todavía no hay partes diarios guardados. Rellena el parte y pulsa Guardar parte diario.</p>}
                 </div>
               </Card>
             </form>
@@ -5717,6 +6269,25 @@ export default function HotelDailyControlApp() {
               </Card>
 
               <Card>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="font-bold">Configuración de caja</h3>
+                    <p className="text-sm text-slate-500">Define el fondo fijo que debe quedar siempre en caja. Este importe se usará como base en cada cierre.</p>
+                  </div>
+                  <Badge tone="blue">Fondo actual: {cashFund}{hotel.currency}</Badge>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-[1fr_auto]">
+                  <Field label={`Fondo fijo de caja (${hotel.currency})`}>
+                    <input className={inputStyle} type="number" value={cashFund} onChange={(e) => updateCashFund(e.target.value)} />
+                  </Field>
+                  <div className="flex items-end"><button className={buttonLight} type="button" onClick={saveCashFundConfig}><Icon name="save" size={18} /> Guardar fondo</button></div>
+                </div>
+                <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
+                  <b>Ejemplo:</b> si el fondo fijo es 250{hotel.currency}, al cerrar caja siempre deberían quedar esos 250{hotel.currency} más los cobros en efectivo del turno, menos los gastos o salidas justificadas.
+                </div>
+              </Card>
+
+              <Card>
                 <h3 className="mb-3 font-bold">Estado del sistema</h3>
                 <p className="text-sm text-slate-600"><b>Estado:</b> {connection.message}</p>
                 <p className="mt-2 text-sm text-slate-600">Este bloque es informativo para administración. No muestra claves ni datos técnicos sensibles en pantalla.</p>
@@ -6270,6 +6841,44 @@ export default function HotelDailyControlApp() {
               Las reservas activas del calendario volverán a marcar automáticamente como ocupadas las habitaciones correspondientes. Después tendrás que pulsar <b>Guardar estado</b>.
             </div>
           </div>
+        </Modal>
+      )}
+
+      {cashClosureModal && (
+        <Modal
+          title="Resumen de cierre de caja"
+          subtitle={`Aplicado al parte del ${formatDateEs(form.date || todayIso())}`}
+          onClose={() => setCashClosureModal(null)}
+          footer={
+            <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+              <button className={buttonLight} type="button" onClick={() => editCashClosure(cashClosureModal)}><Icon name="edit" size={18} /> Editar cierre</button>
+              <button className={buttonLight} type="button" onClick={startNewCashClosure}><Icon name="plus" size={18} /> Nuevo cierre</button><button className={buttonTinyDanger} type="button" onClick={() => deleteCashClosure(cashClosureModal.id)}><Icon name="trash" size={14} /> Borrar</button><button className={buttonDark} type="button" onClick={() => setCashClosureModal(null)}><Icon name="check" size={18} /> Entendido</button>
+            </div>
+          }
+        >
+          {(() => {
+            const totals = calculateCashClosureTotals(cashClosureModal);
+            return (
+              <div className="space-y-4">
+                <div className={cls("rounded-2xl border p-4", totals.difference === 0 ? "border-emerald-200 bg-emerald-50" : totals.difference > 0 ? "border-amber-200 bg-amber-50" : "border-red-200 bg-red-50") }>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h4 className="text-lg font-bold">{getCashClosureStatus(totals)}</h4>
+                      <p className="text-sm text-slate-600">Resumen del cierre aplicado al parte diario.</p>
+                    </div>
+                    <Badge tone={totals.difference === 0 ? "green" : totals.difference > 0 ? "amber" : "red"}>Diferencia {totals.difference}{hotel.currency}</Badge>
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Total cobrado</p><p className="font-bold">{totals.totalCollected}{hotel.currency}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Efectivo esperado</p><p className="font-bold">{totals.expectedCash}{hotel.currency}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Efectivo contado</p><p className="font-bold">{totals.cashCounted}{hotel.currency}</p></div>
+                  <div className="rounded-2xl bg-slate-50 p-3"><p className="text-xs text-slate-500">Gastos / salidas</p><p className="font-bold">{totals.cashWithdrawals}{hotel.currency}</p></div>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-sm font-bold">Detalle guardado en Observaciones</p><p className="mt-2 whitespace-pre-wrap text-sm text-slate-700">{buildCashClosureText(cashClosureModal, hotel.currency || "€")}</p></div>
+              </div>
+            );
+          })()}
         </Modal>
       )}
 
