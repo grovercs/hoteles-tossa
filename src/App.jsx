@@ -20,9 +20,9 @@ const AUTH_STORAGE_KEY = "hotel_daily_control_auth_v1";
 const ROLES = ["Administrador", "Dirección", "Recepción", "Limpieza", "Mantenimiento"];
 
 const ROLE_TABS = {
-  Administrador: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "setup", "help"],
-  Dirección: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "help"],
-  Recepción: ["daily", "tasks", "incidents", "rooms", "calendar", "reports", "help"],
+  Administrador: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "manual", "setup", "help"],
+  Dirección: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "manual", "help"],
+  Recepción: ["daily", "tasks", "incidents", "rooms", "calendar", "reports", "manual", "help"],
   Limpieza: ["tasks", "rooms", "incidents", "help"],
   Mantenimiento: ["incidents", "rooms", "help"],
 };
@@ -1440,6 +1440,541 @@ const buttonLight = "inline-flex min-h-11 items-center justify-center gap-2 roun
 const buttonTiny = "inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border border-slate-300 bg-white px-2 py-1.5 text-[11px] font-bold leading-none text-slate-700 transition hover:border-slate-400 hover:bg-slate-50";
 const buttonTinyDanger = "inline-flex min-h-8 items-center justify-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] font-bold leading-none text-red-700 transition hover:bg-red-100";
 
+
+const MANUAL_OPERATIVO_SECCIONES = [
+  {
+    id: "inicio-turno",
+    titulo: "Inicio de turno",
+    etiqueta: "Diario",
+    resumen: "Revisión inicial para saber qué ocurre hoy en L’Hostalet de Tossa y El Bergantí antes de empezar a gestionar reservas.",
+    pasos: [
+      "Abrir el programa de ocupación o Cloudbeds.",
+      "Revisar primero L’Hostalet de Tossa y después El Bergantí.",
+      "Comprobar llegadas previstas, salidas previstas, estancias en curso y habitaciones bloqueadas.",
+      "Revisar pagos pendientes, observaciones importantes y peticiones especiales.",
+      "Detectar incidencias abiertas que afecten a llegadas o habitaciones vendibles.",
+      "Dejar anotado cualquier punto importante para el equipo.",
+    ],
+    checklist: [
+      "Llegadas del día revisadas",
+      "Salidas del día revisadas",
+      "Habitaciones bloqueadas localizadas",
+      "Pagos pendientes revisados",
+      "Incidencias abiertas revisadas",
+      "Observaciones importantes leídas",
+    ],
+    errores: [
+      "Revisar solo un alojamiento y olvidar el otro.",
+      "No mirar observaciones internas de las reservas.",
+      "No detectar una habitación bloqueada con llegada prevista.",
+    ],
+  },
+  {
+    id: "reservas-nuevas",
+    titulo: "Reservas nuevas",
+    etiqueta: "Reservas",
+    resumen: "Cada reserva nueva debe validarse antes de darla por correcta, especialmente el alojamiento, las fechas y el estado del pago.",
+    pasos: [
+      "Abrir la reserva en el sistema.",
+      "Confirmar si pertenece a L’Hostalet de Tossa o a El Bergantí.",
+      "Revisar nombre, teléfono, email, fechas, número de personas y tipo de habitación.",
+      "Comprobar canal de reserva, importe total, estado del pago y política de cancelación.",
+      "Leer peticiones especiales: cuna, cama extra, llegada tarde, accesos o notas del cliente.",
+      "Confirmar que aparece correctamente en el calendario/planning.",
+    ],
+    checklist: [
+      "Alojamiento correcto",
+      "Fechas correctas",
+      "Tipo de habitación correcto",
+      "Datos de contacto completos",
+      "Pago o garantía revisados",
+      "Observaciones internas añadidas si hace falta",
+    ],
+    errores: [
+      "Confundir L’Hostalet con El Bergantí.",
+      "No revisar si hay petición especial.",
+      "No comprobar si el pago está pendiente o garantizado.",
+    ],
+  },
+  {
+    id: "check-in",
+    titulo: "Llegadas / Check-in",
+    etiqueta: "Recepción",
+    resumen: "Proceso para recibir al cliente, verificar la reserva, revisar documentación y marcar la entrada correctamente.",
+    pasos: [
+      "Antes de la llegada, comprobar que la habitación esté asignada y limpia o en proceso de limpieza.",
+      "Confirmar que no hay incidencias pendientes en la habitación.",
+      "Saludar al cliente y pedir el nombre de la reserva.",
+      "Confirmar alojamiento, fechas, número de noches y habitación asignada.",
+      "Solicitar documentación y completar datos si falta información.",
+      "Confirmar forma de pago y explicar horarios básicos, Wi‑Fi y normas del alojamiento.",
+      "Entregar llaves o instrucciones de acceso.",
+      "Marcar la reserva como entrada realizada en el sistema.",
+    ],
+    checklist: [
+      "Habitación asignada",
+      "Habitación confirmada por limpieza",
+      "Pago revisado",
+      "Documentación solicitada",
+      "Datos del cliente completos",
+      "Entrada marcada en el sistema",
+    ],
+    errores: [
+      "Entregar una habitación sin confirmación de limpieza.",
+      "No confirmar el alojamiento antes de entregar llaves.",
+      "Olvidar marcar la entrada como realizada.",
+    ],
+  },
+  {
+    id: "check-out",
+    titulo: "Salidas / Check-out",
+    etiqueta: "Recepción",
+    resumen: "Cierre correcto de la estancia, revisión de pagos y comunicación inmediata a limpieza.",
+    pasos: [
+      "Confirmar habitación y alojamiento.",
+      "Revisar la cuenta del cliente y posibles cargos pendientes.",
+      "Cobrar importes abiertos si corresponde.",
+      "Emitir factura o recibo si el cliente lo solicita o si procede.",
+      "Recoger llaves o confirmar salida.",
+      "Marcar salida realizada en el sistema.",
+      "Avisar a limpieza para que la habitación pase a pendiente de limpieza.",
+    ],
+    checklist: [
+      "Pago cerrado",
+      "Factura o recibo revisado",
+      "Llaves recogidas o salida confirmada",
+      "Salida marcada en el sistema",
+      "Limpieza avisada",
+      "Habitación en estado correcto tras la salida",
+    ],
+    errores: [
+      "No revisar pagos pendientes antes de cerrar.",
+      "No avisar a limpieza.",
+      "Marcar disponible una habitación que todavía no está revisada.",
+    ],
+  },
+  {
+    id: "limpieza",
+    titulo: "Coordinación con limpieza",
+    etiqueta: "Operativa",
+    resumen: "Recepción debe comunicar prioridades de limpieza, entradas tempranas, salidas tardías e incidencias detectadas.",
+    pasos: [
+      "Pasar a limpieza las salidas del día.",
+      "Indicar habitaciones con llegada el mismo día como prioridad.",
+      "Avisar de entradas tempranas, salidas tardías y clientes esperando.",
+      "Comunicar peticiones especiales: cuna, cama extra, amenities o preparación concreta.",
+      "Registrar incidencias detectadas por limpieza.",
+      "No entregar habitación hasta recibir confirmación de que está lista.",
+    ],
+    checklist: [
+      "Salidas comunicadas",
+      "Llegadas prioritarias marcadas",
+      "Peticiones especiales comunicadas",
+      "Habitaciones listas confirmadas",
+      "Incidencias registradas",
+    ],
+    errores: [
+      "Depender solo de avisos verbales.",
+      "No priorizar habitaciones con llegada el mismo día.",
+      "Entregar habitación sin confirmación de limpieza.",
+    ],
+  },
+  {
+    id: "incidencias",
+    titulo: "Incidencias",
+    etiqueta: "Control",
+    resumen: "Toda incidencia debe quedar registrada con alojamiento, habitación o zona, prioridad, responsable y estado.",
+    pasos: [
+      "Crear la incidencia en el panel correspondiente.",
+      "Indicar alojamiento: L’Hostalet de Tossa o El Bergantí.",
+      "Indicar habitación o zona afectada.",
+      "Seleccionar tipo: limpieza, mantenimiento, cliente, reserva, pago, acceso, ruido, daños o problema técnico.",
+      "Describir el problema de forma clara.",
+      "Asignar prioridad alta, media o baja.",
+      "Asignar responsable si procede.",
+      "Añadir foto si aplica, especialmente desde móvil.",
+      "Actualizar el estado hasta su resolución.",
+    ],
+    checklist: [
+      "Alojamiento indicado",
+      "Habitación o zona indicada",
+      "Descripción clara",
+      "Prioridad asignada",
+      "Responsable asignado",
+      "Estado actualizado",
+    ],
+    errores: [
+      "No registrar incidencias pequeñas.",
+      "No diferenciar urgencia real.",
+      "No bloquear una habitación que no se puede vender.",
+    ],
+  },
+  {
+    id: "pagos",
+    titulo: "Control de pagos",
+    etiqueta: "Caja",
+    resumen: "Recepción debe revisar pagos pendientes, garantías, devoluciones y cargos abiertos antes de llegadas y salidas.",
+    pasos: [
+      "Revisar llegadas con pago pendiente.",
+      "Comprobar reservas garantizadas con tarjeta.",
+      "Revisar estancias con cargos abiertos.",
+      "Comprobar salidas del día con importes pendientes.",
+      "Registrar devoluciones pendientes si existen.",
+      "Añadir nota interna cuando haya algo que revisar en el siguiente turno.",
+    ],
+    checklist: [
+      "Llegadas con pago pendiente revisadas",
+      "Salidas con importes abiertos revisadas",
+      "Garantías comprobadas",
+      "Devoluciones pendientes localizadas",
+      "Notas internas añadidas",
+    ],
+    errores: [
+      "Esperar al check-out para descubrir pagos pendientes.",
+      "No dejar nota cuando hay una devolución pendiente.",
+      "No diferenciar pagado, parcialmente pagado y garantizado.",
+    ],
+  },
+  {
+    id: "modificaciones-cancelaciones",
+    titulo: "Modificaciones y cancelaciones",
+    etiqueta: "Reservas",
+    resumen: "Cualquier cambio de fechas, habitación, precio o cancelación debe revisarse contra disponibilidad, política y calendario.",
+    pasos: [
+      "Abrir la reserva original.",
+      "Confirmar identidad del cliente o canal que solicita el cambio.",
+      "Revisar disponibilidad real antes de modificar.",
+      "Modificar fechas, noches, personas, habitación, precio o alojamiento si corresponde.",
+      "Comprobar nuevo importe y comunicar cambio al cliente si procede.",
+      "Guardar cambios y verificar el calendario.",
+      "Añadir nota interna explicando el cambio.",
+      "En cancelaciones, revisar política, penalización y devolución antes de cancelar.",
+    ],
+    checklist: [
+      "Reserva original localizada",
+      "Disponibilidad revisada",
+      "Importe nuevo comprobado",
+      "Política de cancelación revisada",
+      "Calendario comprobado",
+      "Nota interna añadida",
+    ],
+    errores: [
+      "Cambiar fechas sin mirar disponibilidad real.",
+      "Cancelar sin revisar penalización o devolución.",
+      "No comprobar que la habitación vuelve a disponibilidad.",
+    ],
+  },
+  {
+    id: "cierre-turno",
+    titulo: "Cierre de turno",
+    etiqueta: "Diario",
+    resumen: "Antes de terminar, recepción debe dejar la información clara para el siguiente turno.",
+    pasos: [
+      "Revisar llegadas pendientes.",
+      "Revisar salidas cerradas y habitaciones pendientes de limpieza.",
+      "Comprobar incidencias abiertas.",
+      "Comprobar pagos o devoluciones pendientes.",
+      "Dejar nota de traspaso con clientes, habitaciones o tareas que requieren seguimiento.",
+      "Confirmar que la información importante no queda solo de forma verbal.",
+    ],
+    checklist: [
+      "Llegadas pendientes revisadas",
+      "Salidas cerradas revisadas",
+      "Incidencias abiertas anotadas",
+      "Pagos pendientes anotados",
+      "Nota de traspaso preparada",
+    ],
+    errores: [
+      "No dejar constancia escrita del pendiente.",
+      "No avisar de una habitación bloqueada.",
+      "No explicar el estado real de una incidencia abierta.",
+    ],
+  },
+];
+
+
+const CLOUDBEDS_MANUAL_LINKS = {
+  general: [
+    {
+      title: "Panel de Cloudbeds PMS",
+      description: "Resumen diario: llegadas, salidas, ocupación y habitaciones disponibles.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/115000400634-Panel-Todo-lo-que-debes-saber",
+    },
+    {
+      title: "Guía de operaciones diarias",
+      description: "Referencia general para tareas comunes de recepción en Cloudbeds PMS.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/40771665486363-Tu-gu%C3%ADa-de-operaciones-diarias-de-Cloudbeds-PMS",
+    },
+  ],
+  "inicio-turno": [
+    {
+      title: "Panel - Todo lo que debes saber",
+      description: "Para revisar llegadas, salidas, ocupación y disponibilidad al iniciar el turno.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/115000400634-Panel-Todo-lo-que-debes-saber",
+    },
+    {
+      title: "Calendario - Todo lo que debe saber",
+      description: "Para visualizar reservas, bloqueos, cambios de fecha y asignaciones.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/235146587-Calendario-Todo-lo-que-debe-saber",
+    },
+  ],
+  "reservas-nuevas": [
+    {
+      title: "Reservas",
+      description: "Sección oficial sobre página de reservas, creación, edición, cancelación y folios.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/sections/21390664190491-Reservas",
+    },
+    {
+      title: "Página de información de las reservas",
+      description: "Datos del huésped, estado de reserva, alojamientos y detalles financieros.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/8354513114907-P%C3%A1gina-de-informaci%C3%B3n-de-las-reservas-Todo-lo-que-debe-saber",
+    },
+    {
+      title: "Introducción a los detalles de una reserva",
+      description: "Guía rápida para entender la información disponible dentro de una reserva.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/218512847-Introducci%C3%B3n-a-los-detalles-de-una-reserva",
+    },
+  ],
+  "check-in": [
+    {
+      title: "Guía de operaciones diarias de Cloudbeds PMS",
+      description: "Flujos habituales de recepción, llegadas, salidas y trabajo diario.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/40771665486363-Tu-gu%C3%ADa-de-operaciones-diarias-de-Cloudbeds-PMS",
+    },
+    {
+      title: "Página de información de las reservas",
+      description: "Para comprobar datos del huésped, estado, alojamiento y detalles financieros.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/8354513114907-P%C3%A1gina-de-informaci%C3%B3n-de-las-reservas-Todo-lo-que-debe-saber",
+    },
+  ],
+  "check-out": [
+    {
+      title: "Resumen de cuenta de la reserva",
+      description: "Detalles financieros, transacciones, cargos, pagos, ajustes y reembolsos.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/22503892593051-Resumen-de-cuenta-de-la-reserva-Todo-lo-que-debes-saber",
+    },
+    {
+      title: "Cómo anular transacciones",
+      description: "Pasos para anular pagos o transacciones desde el folio de la reserva.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/1260805465149-C%C3%B3mo-anular-transacciones",
+    },
+  ],
+  limpieza: [
+    {
+      title: "Panel - Todo lo que debes saber",
+      description: "Útil para cruzar llegadas, salidas y habitaciones disponibles antes de pasar prioridades a limpieza.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/115000400634-Panel-Todo-lo-que-debes-saber",
+    },
+    {
+      title: "Calendario - Todo lo que debe saber",
+      description: "Vista visual para entender ocupación, entradas, salidas y bloqueos.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/235146587-Calendario-Todo-lo-que-debe-saber",
+    },
+  ],
+  incidencias: [
+    {
+      title: "Calendario - Todo lo que debe saber",
+      description: "Referencia para bloqueos, retenciones y cambios que afectan a disponibilidad.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/235146587-Calendario-Todo-lo-que-debe-saber",
+    },
+    {
+      title: "Página de información de las reservas",
+      description: "Para revisar si una incidencia afecta a una reserva concreta o a sus datos.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/8354513114907-P%C3%A1gina-de-informaci%C3%B3n-de-las-reservas-Todo-lo-que-debe-saber",
+    },
+  ],
+  pagos: [
+    {
+      title: "Cloudbeds Payments - Todo lo que debes saber",
+      description: "Información general sobre configuración y funcionamiento de Cloudbeds Payments.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/360057382053-Cloudbeds-Payments-Todo-lo-que-debes-saber",
+    },
+    {
+      title: "Resumen de cuenta de la reserva",
+      description: "Folio, detalles financieros, transacciones, cargos, pagos y reembolsos.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/22503892593051-Resumen-de-cuenta-de-la-reserva-Todo-lo-que-debes-saber",
+    },
+    {
+      title: "Cómo funciona la programación de pagos",
+      description: "Pagos programados y transacciones pendientes dentro del folio.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/1260803167969--C%C3%B3mo-funciona-la-programaci%C3%B3n-de-pagos",
+    },
+    {
+      title: "Cómo anular transacciones",
+      description: "Anulación de pagos o transacciones desde el folio de la reserva.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/1260805465149-C%C3%B3mo-anular-transacciones",
+    },
+  ],
+  "modificaciones-cancelaciones": [
+    {
+      title: "Cancelamiento de reservas directas",
+      description: "Cambio de estado a cancelado y efectos sobre calendario, folio y saldo pendiente.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/219146188-Cancelamiento-de-reservas-directas",
+    },
+    {
+      title: "Cancelar o modificar reservas recibidas de OTA",
+      description: "Cuándo cancelar/modificar en Cloudbeds y cuándo hacerlo también en la extranet del canal.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/216541178-Cancelar-o-modificar-las-reservas-recibidas-de-las-OTA",
+    },
+    {
+      title: "Políticas Inteligentes: reservas, pagos y cancelaciones",
+      description: "Cómo se aplican reglas de garantía, pago y cancelación a reservas elegibles.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/44193538614043-C%C3%B3mo-se-aplican-las-Pol%C3%ADticas-Inteligentes-a-las-reservas-los-pagos-y-las-cancelaciones",
+    },
+  ],
+  "cierre-turno": [
+    {
+      title: "Panel - Todo lo que debes saber",
+      description: "Revisión final de llegadas, salidas, ocupación y habitaciones disponibles.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/115000400634-Panel-Todo-lo-que-debes-saber",
+    },
+    {
+      title: "Guía de operaciones diarias de Cloudbeds PMS",
+      description: "Referencia general para tareas comunes del día a día en recepción.",
+      url: "https://myfrontdesk.cloudbeds.com/hc/es/articles/40771665486363-Tu-gu%C3%ADa-de-operaciones-diarias-de-Cloudbeds-PMS",
+    },
+  ],
+};
+
+function getCloudbedsLinksForManual(sectionId) {
+  return [...(CLOUDBEDS_MANUAL_LINKS[sectionId] || []), ...CLOUDBEDS_MANUAL_LINKS.general]
+    .filter((link, index, allLinks) => allLinks.findIndex((item) => item.url === link.url) === index);
+}
+const MANUAL_REGLA_ORO = ["Alojamiento", "Cliente", "Fechas", "Habitación", "Pago", "Observaciones", "Estado final en el sistema"];
+
+function ManualOperativoRecepcion() {
+  const [activeId, setActiveId] = useState(MANUAL_OPERATIVO_SECCIONES[0].id);
+  const [query, setQuery] = useState("");
+
+  const filteredSections = useMemo(() => {
+    const value = query.trim().toLowerCase();
+    if (!value) return MANUAL_OPERATIVO_SECCIONES;
+    return MANUAL_OPERATIVO_SECCIONES.filter((section) => {
+      const searchable = [section.titulo, section.etiqueta, section.resumen, ...section.pasos, ...section.checklist, ...section.errores].join(" ").toLowerCase();
+      return searchable.includes(value);
+    });
+  }, [query]);
+
+  const activeSection = filteredSections.find((section) => section.id === activeId) || filteredSections[0] || MANUAL_OPERATIVO_SECCIONES[0];
+
+  return (
+    <div className="space-y-5 sm:space-y-6">
+      <Card>
+        <div className="grid gap-4 xl:grid-cols-[1fr_340px] xl:items-stretch">
+          <div>
+            <Badge tone="blue">Manual Operativo / Recepción</Badge>
+            <h2 className="mt-3 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">Manual de Operaciones — Jefa de Recepción</h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-600 sm:text-base">Guía rápida para gestionar desde una única recepción los alojamientos L’Hostalet de Tossa y El Bergantí.</p>
+          </div>
+          <div className="rounded-3xl border border-sky-200 bg-sky-50 p-5 text-sky-950">
+            <div className="mb-2 flex items-center gap-2 font-bold"><Icon name="sparkles" size={18} /> Regla de oro</div>
+            <p className="text-sm leading-6">Primero confirmar alojamiento, después gestionar la reserva.</p>
+          </div>
+        </div>
+      </Card>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <ManualInfo label="Alojamientos" value="L’Hostalet de Tossa · El Bergantí" />
+        <ManualInfo label="Punto de gestión" value="Recepción única" />
+        <ManualInfo label="Sistema" value="Cloudbeds / ocupación conectada" />
+        <ManualInfo label="Versión" value="1.0" />
+      </div>
+
+      <Card className="p-0">
+        <div className="rounded-2xl bg-slate-950 p-4 text-white sm:p-5">
+          <div className="mb-3 flex items-center gap-2 text-white"><Icon name="check" size={18} /><h3 className="font-bold text-white">Orden obligatorio de comprobación</h3></div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-7">
+            {MANUAL_REGLA_ORO.map((item, index) => (
+              <div key={item} className="rounded-2xl border border-white/15 bg-white/10 p-3 text-sm font-bold text-white">
+                <span className="mb-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-white text-xs font-black text-slate-950">{index + 1}</span>
+                <span className="block text-white">{item}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </Card>
+
+      <Card>
+        <Field label="Buscar en el manual"><input className={inputStyle} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar: pagos, check-in, limpieza, incidencias..." /></Field>
+      </Card>
+
+      <div className="grid gap-5 xl:grid-cols-[300px_1fr]">
+        <Card className="xl:sticky xl:top-24 xl:h-fit">
+          <h3 className="mb-3 font-bold">Bloques del manual</h3>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            {filteredSections.map((section) => {
+              const isActive = section.id === activeSection.id;
+              return (
+                <button key={section.id} type="button" onClick={() => setActiveId(section.id)} className={cls("rounded-2xl border p-3 text-left transition", isActive ? "border-[#2f5f7a] bg-sky-50 shadow-sm" : "border-slate-200 bg-slate-50 hover:border-sky-300 hover:bg-white")}>
+                  <span className="mb-1 block text-[11px] font-black uppercase tracking-wide text-slate-500">{section.etiqueta}</span>
+                  <strong className="text-sm text-slate-900">{section.titulo}</strong>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+
+        <Card>
+          <div className="mb-5 border-b border-slate-200 pb-5">
+            <Badge tone="blue">{activeSection.etiqueta}</Badge>
+            <h3 className="mt-3 text-xl font-bold sm:text-2xl">{activeSection.titulo}</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-600">{activeSection.resumen}</p>
+          </div>
+          <div className="grid gap-4 xl:grid-cols-3">
+            <ManualBlock title="Pasos recomendados" items={activeSection.pasos} ordered tone="blue" />
+            <ManualBlock title="Checklist rápido" items={activeSection.checklist} icon="✓" tone="green" />
+            <ManualBlock title="Errores a evitar" items={activeSection.errores} icon="!" tone="amber" />
+          </div>
+          <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm leading-6 text-sky-950">
+            <div className="mb-2 flex items-center gap-2 font-bold"><Icon name="cloud" size={18} /> Ayuda Cloudbeds relacionada</div>
+            <p className="mb-4 text-sky-900">Enlaces oficiales de Cloudbeds para consultar el procedimiento ampliado sin salir del manual interno.</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {getCloudbedsLinksForManual(activeSection.id).map((link) => (
+                <a
+                  key={link.url}
+                  href={link.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-2xl border border-sky-200 bg-white p-3 text-left transition hover:border-sky-400 hover:bg-sky-50 hover:shadow-sm"
+                >
+                  <span className="block font-bold text-sky-950">{link.title}</span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-600">{link.description}</span>
+                </a>
+              ))}
+            </div>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function ManualInfo({ label, value }) {
+  return (
+    <Card>
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-1 font-bold text-slate-900">{value}</p>
+    </Card>
+  );
+}
+
+function ManualBlock({ title, items, ordered = false, icon = "•", tone = "blue" }) {
+  const iconClass = tone === "green" ? "bg-emerald-100 text-emerald-800" : tone === "amber" ? "bg-amber-100 text-amber-800" : "bg-sky-100 text-sky-800";
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <h4 className="mb-3 font-bold">{title}</h4>
+      <div className="space-y-2">
+        {items.map((item, index) => (
+          <div key={title + "-" + item} className="grid grid-cols-[28px_1fr] gap-2 text-sm leading-6 text-slate-700">
+            <span className={cls("inline-flex h-6 w-6 items-center justify-center rounded-full text-xs font-black", iconClass)}>{ordered ? index + 1 : icon}</span>
+            <span>{item}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function HotelDailyControlApp() {
   const stored = typeof window !== "undefined" ? readLocal() : null;
 
@@ -1801,6 +2336,7 @@ export default function HotelDailyControlApp() {
     ["rooms", "Habitaciones", "bed"],
     ["calendar", "Calendario", "calendar"],
     ["reports", "Informes", "file"],
+    ["manual", "Manual operativo", "clipboard"],
     ["setup", "Config.", "settings"],
     ["help", "Ayuda", "sparkles"],
   ];
@@ -4837,6 +5373,8 @@ export default function HotelDailyControlApp() {
               </Card>
             </div>
           )}
+
+          {active === "manual" && <ManualOperativoRecepcion />}
 
           {active === "help" && (
             <div className="space-y-5 sm:space-y-6">
