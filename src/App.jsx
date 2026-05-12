@@ -2596,6 +2596,47 @@ export default function HotelDailyControlApp() {
   const canManageUsers = currentRole === "Administrador";
 
   useEffect(() => {
+    if (typeof window === "undefined" || !visibleTabs.length) return;
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const tabFromUrl = params.get("tab");
+      if (tabFromUrl && canAccessTab(currentRole, tabFromUrl) && tabFromUrl !== active) {
+        setActive(tabFromUrl);
+        setMobileMenuOpen(false);
+      }
+    } catch {
+      // URLSearchParams puede fallar en navegadores muy antiguos, no bloqueamos la app.
+    }
+  }, [currentRole, active, visibleTabs.length]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleMobileBrowserBackTabs = () => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const tabFromUrl = params.get("tab");
+        const fallbackTab = visibleTabs[0]?.[0] || active;
+        const nextTab = tabFromUrl || fallbackTab;
+
+        if (nextTab && canAccessTab(currentRole, nextTab)) {
+          setActive(nextTab);
+          setMobileMenuOpen(false);
+          window.setTimeout(() => {
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          }, 0);
+        }
+      } catch {
+        // No rompemos la app si el navegador no permite leer la URL.
+      }
+    };
+
+    window.addEventListener("popstate", handleMobileBrowserBackTabs);
+    return () => window.removeEventListener("popstate", handleMobileBrowserBackTabs);
+  }, [currentRole, active, visibleTabs.length]);
+
+  useEffect(() => {
     if (!visibleTabs.length) return;
     if (!canAccessTab(currentRole, active)) {
       setActive(visibleTabs[0][0]);
@@ -2660,11 +2701,29 @@ export default function HotelDailyControlApp() {
     setConnection({ status: "local", message: "Sesión cerrada." });
   }
 
-  function goToTab(id) {
+  function pushAppTabHistory(id) {
+    if (typeof window === "undefined") return;
+    try {
+      const url = new URL(window.location.href);
+      const currentTab = url.searchParams.get("tab") || active;
+      if (currentTab === id) return;
+      url.searchParams.set("tab", id);
+      window.history.pushState({ hdcTab: id }, "", `${url.pathname}${url.search}${url.hash}`);
+    } catch {
+      // Si el navegador no permite modificar history, seguimos cambiando la pestana normal.
+    }
+  }
+
+  function goToTab(id, options = {}) {
     if (!canAccessTab(currentRole, id)) {
       setLastAction("Tu usuario no tiene permisos para acceder a este apartado.");
       return;
     }
+
+    if (options.pushHistory !== false) {
+      pushAppTabHistory(id);
+    }
+
     setActive(id);
     setMobileMenuOpen(false);
     window.setTimeout(() => {
