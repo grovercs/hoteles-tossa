@@ -2226,6 +2226,10 @@ export default function HotelDailyControlApp() {
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState("");
   const [userSavingId, setUserSavingId] = useState(null);
+  const [pwUserId, setPwUserId] = useState(null);
+  const [pwValue, setPwValue] = useState("");
+  const [pwSavingId, setPwSavingId] = useState(null);
+  const [pwMsg, setPwMsg] = useState({ id: null, type: "", text: "" });
   const [form, setForm] = useState({
     date: todayIso(),
     manager: "",
@@ -2791,6 +2795,33 @@ export default function HotelDailyControlApp() {
       setUsersError(e?.message || "No se pudo actualizar el usuario.");
     } finally {
       setUserSavingId(null);
+    }
+  }
+
+  // Cambiar la contraseña de un usuario (requiere Edge Function admin-set-password).
+  async function changeUserPassword(id, newPw) {
+    setPwSavingId(id);
+    setPwMsg({ id: null, type: "", text: "" });
+    try {
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-set-password`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${authSession?.access_token || ""}`,
+        },
+        body: JSON.stringify({ userId: id, newPassword: newPw }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || `No se pudo cambiar la contraseña (${res.status}).`);
+      setPwMsg({ id, type: "ok", text: "Contraseña actualizada." });
+      setPwUserId(null);
+      setPwValue("");
+    } catch (e) {
+      const msg = e?.message || "No se pudo cambiar la contraseña.";
+      setPwMsg({ id, type: "error", text: msg });
+    } finally {
+      setPwSavingId(null);
     }
   }
 
@@ -6530,6 +6561,7 @@ export default function HotelDailyControlApp() {
                             <th className="pb-2 font-semibold">Email</th>
                             <th className="pb-2 font-semibold">Rol</th>
                             <th className="pb-2 font-semibold">Activo</th>
+                            <th className="pb-2 font-semibold">Contraseña</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -6568,6 +6600,44 @@ export default function HotelDailyControlApp() {
                                     {u.is_active === false ? "Inactivo" : "Activo"}
                                   </button>
                                 </td>
+                                <td className="py-2 pr-2">
+                                  {pwUserId === u.id ? (
+                                    <div className="flex flex-col gap-1">
+                                      <input
+                                        type="password"
+                                        className={inputStyle}
+                                        placeholder="Nueva contraseña (mín. 6)"
+                                        value={pwValue}
+                                        onChange={(e) => setPwValue(e.target.value)}
+                                        autoFocus
+                                      />
+                                      <div className="flex gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={pwSavingId === u.id || pwValue.length < 6}
+                                          onClick={() => changeUserPassword(u.id, pwValue)}
+                                          className="rounded-xl bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                                        >
+                                          {pwSavingId === u.id ? "Guardando…" : "Guardar"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => { setPwUserId(null); setPwValue(""); setPwMsg({ id: null, type: "", text: "" }); }}
+                                          className="rounded-xl bg-slate-200 px-2 py-1 text-xs font-bold text-slate-600"
+                                        >Cancelar</button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => { setPwUserId(u.id); setPwValue(""); setPwMsg({ id: null, type: "", text: "" }); }}
+                                      className="rounded-xl bg-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-300"
+                                    >Cambiar</button>
+                                  )}
+                                  {pwMsg.id === u.id && pwMsg.text && (
+                                    <div className={cls("mt-1 text-xs", pwMsg.type === "ok" ? "text-emerald-700" : "text-red-700")}>{pwMsg.text}</div>
+                                  )}
+                                </td>
                               </tr>
                             );
                           })}
@@ -6576,7 +6646,7 @@ export default function HotelDailyControlApp() {
                     </div>
                   )}
 
-                  <p className="mt-3 text-xs text-slate-400">No puedes cambiar tu propio rol ni desactivarte (para no bloquearte el acceso). Para crear nuevos usuarios: Supabase → Authentication → Add user, y crea después su fila en <code>profiles</code> con su rol.</p>
+                  <p className="mt-3 text-xs text-slate-400">No puedes cambiar tu propio rol ni desactivarte (para no bloquearte el acceso). Para crear nuevos usuarios: Supabase → Authentication → Add user, y crea después su fila en <code>profiles</code> con su rol. Para cambiar contraseñas: botón <b>Cambiar</b> de cada fila (requiere la Edge Function <code>admin-set-password</code> desplegada en Supabase).</p>
                 </Card>
               )}
             </div>
