@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+const Beds24Reports = React.lazy(() => import("./Beds24Reports.jsx"));
 
 /**
  * Hotel Daily Control - MVP operativo
@@ -20,8 +21,8 @@ const AUTH_STORAGE_KEY = "hotel_daily_control_auth_v1";
 const ROLES = ["Administrador", "Dirección", "Recepción", "Limpieza", "Mantenimiento"];
 
 const ROLE_TABS = {
-  Administrador: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "manual", "setup", "help"],
-  Dirección: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "manual", "help"],
+  Administrador: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "beds24", "manual", "setup", "help"],
+  Dirección: ["dashboard", "daily", "tasks", "incidents", "rooms", "calendar", "reports", "beds24", "manual", "help"],
   Recepción: ["daily", "tasks", "incidents", "rooms", "calendar", "reports", "manual", "help"],
   Limpieza: ["tasks", "rooms", "incidents", "help"],
   Mantenimiento: ["incidents", "rooms", "help"],
@@ -2219,6 +2220,12 @@ export default function HotelDailyControlApp() {
   const [authProfile, setAuthProfile] = useState(null);
   const [authLoading, setAuthLoading] = useState(false);
   const [authForm, setAuthForm] = useState({ email: "", password: "" });
+  const [demoPreview, setDemoPreview] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersError, setUsersError] = useState("");
+  const [userSavingId, setUserSavingId] = useState(null);
   const [form, setForm] = useState({
     date: todayIso(),
     manager: "",
@@ -2587,6 +2594,7 @@ export default function HotelDailyControlApp() {
     ["rooms", "Habitaciones", "bed"],
     ["calendar", "Calendario", "calendar"],
     ["reports", "Informes", "file"],
+    ["beds24", "Informes Beds24", "chart"],
     ["manual", "Manual operativo", "clipboard"],
     ["setup", "Config.", "settings"],
     ["help", "Ayuda", "sparkles"],
@@ -2644,6 +2652,12 @@ export default function HotelDailyControlApp() {
     }
   }, [currentRole, active, visibleTabs]);
 
+  // Cargar usuarios al entrar en Config. (solo Administrador).
+  useEffect(() => {
+    if (active === "setup" && currentRole === "Administrador") loadUsers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, currentRole, authSession?.access_token]);
+
   async function loginWithEmail(e) {
     e.preventDefault();
     if (!HAS_SUPABASE) {
@@ -2699,6 +2713,76 @@ export default function HotelDailyControlApp() {
     setAuthUser(null);
     setAuthProfile(null);
     setConnection({ status: "local", message: "Sesión cerrada." });
+  }
+
+  // Modo demo como Dirección: solo para previsualizar la app (p.ej. el panel Beds24
+  // que funciona 100% en cliente con la subida del .xls). No usa ni guarda sesion
+  // de Supabase; los cambios no se sincronizan. Se activa con ?demo=1 en la URL.
+  function enterDemoPreview() {
+    setAuthProfile({ id: "demo", email: "demo@local", fullName: "Demo Dirección", role: "Dirección", isActive: true });
+    setAuthSession(null);
+    setAuthUser(null);
+    setDemoPreview(true);
+    setConnection({ status: "local", message: "Modo demostración (Dirección). Los cambios no se sincronizan con Supabase." });
+  }
+
+  function exitDemoPreview() {
+    setDemoPreview(false);
+    setAuthProfile(null);
+    setConnection({ status: HAS_SUPABASE ? "loading" : "local", message: HAS_SUPABASE ? "Preparando sistema..." : "Modo demostración" });
+  }
+
+  async function sendPasswordReset() {
+    const email = authForm.email.trim();
+    setResetSent(false);
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      setConnection({ status: "error", message: "Escribe tu email arriba y pulsa de nuevo." });
+      return;
+    }
+    try {
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!res.ok) throw new Error("No se pudo enviar el correo de recuperación.");
+      setResetSent(true);
+      setConnection({ status: "local", message: `Enviado: revisa el correo de ${email} para restablecer la contraseña.` });
+    } catch (e) {
+      setConnection({ status: "error", message: e?.message || "No se pudo enviar el correo." });
+    }
+  }
+
+  // ---- Gestion de usuarios (solo Administrador) ----
+  async function loadUsers() {
+    if (!HAS_SUPABASE || !authSession?.access_token || currentRole !== "Administrador") return;
+    setUsersLoading(true);
+    setUsersError("");
+    try {
+      const rows = await sb("profiles?select=id,email,full_name,role,is_active&order=role.asc,email.asc");
+      setUsers(Array.isArray(rows) ? rows : []);
+    } catch (e) {
+      setUsersError(e?.message || "No se pudo cargar el listado de usuarios.");
+      setUsers([]);
+    } finally {
+      setUsersLoading(false);
+    }
+  }
+
+  async function updateUserProfile(id, patch) {
+    setUserSavingId(id);
+    try {
+      await sb(`profiles?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+      setUsers((list) => list.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+      // Si se editó el propio usuario, refresca su perfil en la app.
+      if (authSession?.user?.id === id && (patch.role || patch.is_active !== undefined)) {
+        setAuthProfile((p) => p ? { ...p, ...(patch.role ? { role: patch.role } : {}), ...(patch.is_active !== undefined ? { isActive: patch.is_active } : {}) } : p);
+      }
+    } catch (e) {
+      setUsersError(e?.message || "No se pudo actualizar el usuario.");
+    } finally {
+      setUserSavingId(null);
+    }
   }
 
   function pushAppTabHistory(id) {
@@ -4280,7 +4364,7 @@ export default function HotelDailyControlApp() {
   const connectionTone = connection.status === "online" ? "green" : connection.status === "error" ? "red" : connection.status === "loading" ? "amber" : "slate";
   const connectionIcon = connection.status === "online" ? "check" : "offline";
 
-  if (HAS_SUPABASE && !authSession?.access_token) {
+  if (HAS_SUPABASE && !authSession?.access_token && !demoPreview) {
     return (
       <div className="min-h-screen bg-[#f4f6fa] px-4 py-8 text-slate-900">
         <div className="mx-auto flex min-h-[85vh] max-w-5xl items-center justify-center">
@@ -4311,6 +4395,23 @@ export default function HotelDailyControlApp() {
               </div>
             )}
 
+            <button
+              type="button"
+              onClick={sendPasswordReset}
+              className="mt-3 w-full text-center text-xs font-semibold text-[#2f5f7a] hover:underline"
+            >
+              {resetSent ? "Correo de recuperación enviado ✓ (revisa tu bandeja)" : "¿Olvidaste tu contraseña? Enviar enlace de recuperación"}
+            </button>
+
+            {typeof window !== "undefined" && new URLSearchParams(window.location.search).get("demo") === "1" && (
+              <button type="button" onClick={enterDemoPreview} className={cls(buttonLight, "mt-4 w-full")}>
+                <Icon name="view" size={18} /> Entrar en modo demostración (Dirección)
+              </button>
+            )}
+            {typeof window !== "undefined" && new URLSearchParams(window.location.search).get("demo") === "1" && (
+              <p className="mt-2 text-center text-xs text-slate-400">Modo demo: previsualiza la app sin login. Los cambios no se sincronizan. La pestaña Informes Beds24 funciona con subida de .xls.</p>
+            )}
+
             <p className="mt-5 text-center text-xs text-slate-400">Desarrollado por Vielha Computer</p>
           </Card>
         </div>
@@ -4338,6 +4439,7 @@ export default function HotelDailyControlApp() {
             <button className="inline-flex rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50" type="button" onClick={exportBackup}><Icon name="copy" size={14} /> <span className="hidden sm:inline">Copia JSON</span><span className="sm:hidden">Copia</span></button>
             {authProfile && <Badge tone="blue"><span className="inline-flex items-center gap-1"><Icon name="user" size={14} /> <span className="hidden sm:inline">{authProfile.fullName} · </span>{authProfile.role}</span></Badge>}
             {HAS_SUPABASE && authSession?.access_token && <button className="hidden rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50 sm:inline-flex" type="button" onClick={logout}>Salir</button>}
+            {demoPreview && <button className="hidden rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800 shadow-sm transition hover:bg-amber-100 sm:inline-flex" type="button" onClick={exitDemoPreview}>Salir demo</button>}
             <button className="rounded-2xl border border-slate-300 bg-white p-2 text-slate-700 shadow-sm lg:hidden" onClick={() => setMobileMenuOpen(!mobileMenuOpen)} aria-label="Abrir menú">
               <Icon name="menu" size={22} />
             </button>
@@ -4349,6 +4451,7 @@ export default function HotelDailyControlApp() {
             <div className="mb-3 flex items-center justify-between rounded-2xl bg-slate-50 px-3 py-2 text-sm">
               <span className="font-semibold text-slate-700">{authProfile ? `${authProfile.fullName} · ${authProfile.role}` : "Usuario"}</span>
               {HAS_SUPABASE && authSession?.access_token && <button className="font-bold text-[#2f5f7a]" type="button" onClick={logout}>Salir</button>}
+              {demoPreview && <button className="font-bold text-amber-700" type="button" onClick={exitDemoPreview}>Salir demo</button>}
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {visibleTabs.map(([id, label, icon]) => (
@@ -6070,6 +6173,17 @@ export default function HotelDailyControlApp() {
             </div>
           )}
 
+          {active === "beds24" && (
+            <React.Suspense fallback={<div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-500">Cargando panel Beds24…</div>}>
+              <Beds24Reports
+                currency={hotel.currency}
+                supabaseUrl={SUPABASE_URL}
+                anonKey={SUPABASE_KEY}
+                accessToken={authSession?.access_token}
+              />
+            </React.Suspense>
+          )}
+
           {active === "manual" && <ManualOperativoRecepcion />}
 
           {active === "help" && (
@@ -6379,6 +6493,83 @@ export default function HotelDailyControlApp() {
                 <p className="mb-4 text-sm text-slate-500">Si el sistema trabaja sin sincronización, la app guarda datos localmente en este navegador.</p>
                 <button className={buttonLight} type="button" onClick={resetDemo}><Icon name="trash" size={18} /> Restaurar datos demo</button>
               </Card>
+
+              {canManageUsers && (
+                <Card>
+                  <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="font-bold">Usuarios</h3>
+                      <p className="text-sm text-slate-500">Gestiona quién puede entrar a la app y con qué rol. Solo Administrador.</p>
+                    </div>
+                    <button className={buttonLight} type="button" onClick={loadUsers} disabled={usersLoading}><Icon name="sync" size={18} /> {usersLoading ? "Cargando…" : "Actualizar"}</button>
+                  </div>
+
+                  {usersError && <div className="mb-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">{usersError}</div>}
+
+                  {usersLoading && !users.length ? (
+                    <p className="text-sm text-slate-500">Cargando usuarios…</p>
+                  ) : users.length === 0 ? (
+                    <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                      No hay usuarios visibles. Si acabas de aplicar las políticas RLS en Supabase, pulsa <b>Actualizar</b>. Si sigue vacío, revisa el SQL de RLS (archivo <code>src/database/profiles_rls.sql</code>).
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="text-left text-xs uppercase text-slate-500">
+                            <th className="pb-2 font-semibold">Nombre</th>
+                            <th className="pb-2 font-semibold">Email</th>
+                            <th className="pb-2 font-semibold">Rol</th>
+                            <th className="pb-2 font-semibold">Activo</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {users.map((u) => {
+                            const isSelf = u.id === authSession?.user?.id;
+                            const saving = userSavingId === u.id;
+                            const disabled = isSelf || saving;
+                            return (
+                              <tr key={u.id} className="border-t border-slate-100">
+                                <td className="py-2 pr-2 text-slate-700">
+                                  {u.full_name || "-"}
+                                  {isSelf && <span className="ml-1 text-xs text-slate-400">(tú)</span>}
+                                </td>
+                                <td className="py-2 pr-2 text-slate-600">{u.email || "-"}</td>
+                                <td className="py-2 pr-2">
+                                  <select
+                                    className={inputStyle}
+                                    value={u.role && ROLES.includes(u.role) ? u.role : "Recepción"}
+                                    disabled={disabled}
+                                    onChange={(e) => updateUserProfile(u.id, { role: e.target.value })}
+                                  >
+                                    {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+                                  </select>
+                                </td>
+                                <td className="py-2">
+                                  <button
+                                    type="button"
+                                    disabled={disabled}
+                                    onClick={() => updateUserProfile(u.id, { is_active: u.is_active === false ? true : false })}
+                                    className={cls(
+                                      "rounded-xl px-3 py-1.5 text-xs font-bold",
+                                      u.is_active === false ? "bg-slate-200 text-slate-600" : "bg-emerald-100 text-emerald-800",
+                                      disabled && "cursor-not-allowed opacity-50"
+                                    )}
+                                  >
+                                    {u.is_active === false ? "Inactivo" : "Activo"}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  <p className="mt-3 text-xs text-slate-400">No puedes cambiar tu propio rol ni desactivarte (para no bloquearte el acceso). Para crear nuevos usuarios: Supabase → Authentication → Add user, y crea después su fila en <code>profiles</code> con su rol.</p>
+                </Card>
+              )}
             </div>
           )}
         </section>

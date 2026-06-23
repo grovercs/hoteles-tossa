@@ -3,3 +3,10 @@ dist
 .env
 .env.local
 .DS_Store
+
+# Datos financieros de ejemplo del hotel (no subirse a GitHub/Netlify)
+public/Mayo/
+
+# Backups y parches temporales
+*.backup-*.jsx
+patch-mobile-browser-back-tabs-*.cjs
