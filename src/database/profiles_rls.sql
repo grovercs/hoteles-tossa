@@ -30,15 +30,26 @@ create policy "profiles_self_update" on public.profiles
 create policy "profiles_self_insert" on public.profiles
   for insert with check (auth.uid() = id);
 
+-- Funcion SECURITY DEFINER para comprobar rol Admin sin recursion de RLS.
+-- (Si hicieramos el select sobre profiles dentro de la policy, Postgres
+--  re-evaluaria RLS de profiles -> infinite recursion. Esta funcion lo evita.)
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer set search_path = public
+as $$
+  select exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.role = 'Administrador'
+  );
+$$;
+
 -- El Administrador puede ver, crear, editar y borrar TODOS los perfiles.
 create policy "profiles_admin_all" on public.profiles
   for all
-  using (
-    exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'Administrador')
-  )
-  with check (
-    exists (select 1 from public.profiles p where p.id = auth.uid() and p.role = 'Administrador')
-  );
+  using (public.is_admin())
+  with check (public.is_admin());
 
 -- Restringir los roles validos.
 alter table public.profiles drop constraint if exists profiles_role_check;

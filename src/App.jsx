@@ -2743,7 +2743,7 @@ export default function HotelDailyControlApp() {
       const res = await fetch(`${SUPABASE_URL}/auth/v1/recover`, {
         method: "POST",
         headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, redirect_to: window.location.origin }),
       });
       if (!res.ok) throw new Error("No se pudo enviar el correo de recuperación.");
       setResetSent(true);
