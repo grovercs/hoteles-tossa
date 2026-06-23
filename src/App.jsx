@@ -2745,7 +2745,16 @@ export default function HotelDailyControlApp() {
         headers: { apikey: SUPABASE_KEY, "Content-Type": "application/json" },
         body: JSON.stringify({ email, redirect_to: window.location.origin }),
       });
-      if (!res.ok) throw new Error("No se pudo enviar el correo de recuperación.");
+      if (!res.ok) {
+        let detail = "";
+        try {
+          const j = await res.json();
+          detail = j?.message || j?.error_description || j?.error || JSON.stringify(j);
+        } catch {
+          try { detail = await res.text(); } catch {}
+        }
+        throw new Error(detail ? `No se pudo enviar (${res.status}): ${detail}` : `No se pudo enviar el correo (${res.status}).`);
+      }
       setResetSent(true);
       setConnection({ status: "local", message: `Enviado: revisa el correo de ${email} para restablecer la contraseña.` });
     } catch (e) {
