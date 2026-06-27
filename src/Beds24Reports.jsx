@@ -72,14 +72,24 @@ function KpiCard({ label, value, sub, tone = "slate" }) {
 }
 
 // ----- Tooltip de graficos -----
+// Formatea cada serie segun su campo: ocupacion -> %, ingresos/ADR/RevPAR -> €.
 function ChartTooltip({ active, payload, label, unit }) {
   if (!active || !payload || !payload.length) return null;
+  const fmtFor = (p) => {
+    const key = String(p.dataKey || p.name || "").toLowerCase();
+    const isPct = unit === "pct" || key.includes("occupanc") || key.includes("ocupac");
+    const isMoney = unit === "money" || key.includes("revenue") || key.includes("ingres")
+      || key === "adr" || key === "revpar" || key.includes("price");
+    if (isPct) return fmtPct(p.value);
+    if (isMoney) return fmtMoney(p.value);
+    return fmtInt(p.value);
+  };
   return (
     <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs shadow-md">
       <p className="mb-1 font-bold text-slate-700">{label}</p>
       {payload.map((p, i) => (
         <p key={i} style={{ color: p.color || p.stroke || p.fill }} className="font-semibold">
-          {p.name}: {unit === "money" ? fmtMoney(p.value) : unit === "pct" ? fmtPct(p.value) : fmtInt(p.value)}
+          {p.name}: {fmtFor(p)}
         </p>
       ))}
     </div>
