@@ -168,14 +168,7 @@ export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, 
       const json = await res.json();
       setReport(buildReportFromApi(json));
       setFileName(`Beds24 API · ${fmtDateEs(range.desde)} - ${fmtDateEs(range.hasta)}`);
-      const d = json?.meta?.debug;
-      let info = "Datos obtenidos en vivo desde Beds24.";
-      if (d) {
-        info += ` — reservas: ${json.meta.bookingsCount}. Sumas crudas (candidatos): price=${d.sumBprice}€ · priceTotal=${d.sumPriceTotal}€ · invoice.price=${d.sumInvoicePrice}€ · invoice.totalPrice=${d.sumInvoiceTotal}€. Calculado: ${d.computedRevenue}€.`;
-        if (d.sampleBooking) info += ` Muestra 1ª reserva: ${JSON.stringify(d.sampleBooking)}`;
-        if (Array.isArray(d.bookingsDump) && d.bookingsDump.length) info += ` Volcado reservas: ${JSON.stringify(d.bookingsDump)}`;
-      }
-      setApiInfo(info);
+      setApiInfo(`Datos obtenidos en vivo desde Beds24 · ${json.meta?.bookingsCount ?? 0} reservas.`);
     } catch (e) {
       setApiError(e?.message || "No se pudo consultar Beds24. Sube un archivo .xls como alternativa.");
     } finally {

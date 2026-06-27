@@ -336,45 +336,6 @@ Deno.serve(async (req: Request) => {
     const months = buildMonths(days);
     const channels = buildChannels(bookings, dates);
 
-    // 3) Depuración: sumas crudas por cada campo candidato + muestra de la 1ª reserva.
-    let sumBprice = 0, sumInvTotal = 0, sumInvPrice = 0, sumPriceTotal = 0;
-    for (const b of bookings) {
-      sumBprice += Number(b?.price || 0) || 0;
-      sumInvTotal += Number(b?.invoice?.totalPrice || 0) || 0;
-      sumInvPrice += Number(b?.invoice?.price || 0) || 0;
-      sumPriceTotal += Number(b?.priceTotal || 0) || 0;
-    }
-    const b0 = bookings[0] || null;
-    const sampleBooking = b0 ? {
-      reference: b0.reference ?? b0.bookId,
-      status: b0.status,
-      arrivalDate: b0.arrivalDate,
-      departureDate: b0.departureDate,
-      firstNight: b0.firstNight,
-      lastNight: b0.lastNight,
-      nights: b0.nights,
-      numberOfNights: b0.numberOfNights,
-      guests: b0.guests ?? b0.numberOfPeople,
-      price: b0.price,
-      totalPrice: b0.totalPrice,
-      priceTotal: b0.priceTotal,
-      invoice: b0.invoice ? { price: b0.invoice.price, totalPrice: b0.invoice.totalPrice } : undefined,
-      referer: b0.referer,
-      referrer: b0.referrer,
-      apiSource: b0.apiSource,
-      keys: Object.keys(b0),
-    } : null;
-    // Volcado compacto de TODAS las reservas devueltas: para diagnosticar si
-    // el filtro de fechas actua o si Beds24 devuelve "las mas recientes".
-    const bookingsDump = bookings.slice(0, 60).map((b: any) => ({
-      firstNight: b.firstNight,
-      lastNight: b.lastNight,
-      status: b.status,
-      price: b.price,
-      referer: b.referer,
-      apiSource: b.apiSource,
-    }));
-
     return json({
       source: "api",
       variant: "aggregated",
@@ -388,16 +349,6 @@ Deno.serve(async (req: Request) => {
         userId,
         bookingsCount: bookings.length,
         totalRooms,
-        note: "Agregación calculada en servidor desde getBookings. Verifica el mapeo de campos de precio contra tu cuenta de Beds24.",
-        debug: {
-          computedRevenue: round2(totals.revenue),
-          sumBprice: round2(sumBprice),
-          sumPriceTotal: round2(sumPriceTotal),
-          sumInvoicePrice: round2(sumInvPrice),
-          sumInvoiceTotal: round2(sumInvTotal),
-          sampleBooking,
-          bookingsDump,
-        },
       },
     });
   } catch (e) {
