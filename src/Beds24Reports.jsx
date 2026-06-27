@@ -193,6 +193,7 @@ export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, 
   const days = report?.days || [];
   const months = report?.months || [];
   const roomTypes = report?.roomTypes;
+  const channels = report?.channels;
 
   const hasData = Boolean(report && days.length);
 
@@ -369,6 +370,52 @@ export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, 
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Ingresos por canal: venta directa vs canales/OTAs (solo API) */}
+      {hasData && channels && (
+        <div className={cardCls}>
+          <h3 className="mb-1 text-sm font-bold text-slate-700">Ingresos por canal</h3>
+          <p className="mb-3 text-xs text-slate-500">Venta directa frente a canales/OTAs, según el campo <code>referrer</code> de Beds24.</p>
+          <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+              <div className="text-xs font-semibold uppercase text-emerald-700">Venta directa</div>
+              <div className="text-lg font-bold text-emerald-900">{fmtMoney(channels.directa?.revenue || 0, currency)}</div>
+              <div className="text-xs text-emerald-700">{fmtInt(channels.directa?.bookings || 0)} reservas · {totals?.revenue ? fmtPct(((channels.directa?.revenue || 0) / totals.revenue) * 100) : "—"}</div>
+            </div>
+            <div className="rounded-xl border border-sky-200 bg-sky-50 p-3">
+              <div className="text-xs font-semibold uppercase text-sky-700">Canales / OTAs</div>
+              <div className="text-lg font-bold text-sky-900">{fmtMoney(channels.canales?.revenue || 0, currency)}</div>
+              <div className="text-xs text-sky-700">{fmtInt(channels.canales?.bookings || 0)} reservas · {totals?.revenue ? fmtPct(((channels.canales?.revenue || 0) / totals.revenue) * 100) : "—"}</div>
+            </div>
+          </div>
+          {channels.byChannel && channels.byChannel.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs uppercase text-slate-500">
+                    <th className="pb-2 font-semibold">Canal</th>
+                    <th className="pb-2 text-right font-semibold">Ingresos</th>
+                    <th className="pb-2 text-right font-semibold">Reservas</th>
+                    <th className="pb-2 text-right font-semibold">Noches</th>
+                    <th className="pb-2 text-right font-semibold">% ing.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {channels.byChannel.map((c) => (
+                    <tr key={c.name} className="border-t border-slate-100">
+                      <td className="py-2 pr-2 text-slate-700">{c.name}</td>
+                      <td className="py-2 text-right font-semibold text-slate-800">{fmtMoney(c.revenue, currency)}</td>
+                      <td className="py-2 text-right text-slate-600">{fmtInt(c.bookings)}</td>
+                      <td className="py-2 text-right text-slate-600">{fmtInt(c.nights)}</td>
+                      <td className="py-2 text-right text-slate-600">{totals?.revenue ? fmtPct((c.revenue / totals.revenue) * 100) : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

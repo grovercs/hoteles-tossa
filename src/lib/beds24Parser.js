@@ -349,5 +349,6 @@ export function buildReportFromApi(apiJson) {
     totals: apiJson.totals || computeTotals(days),
     months: apiJson.months || buildMonths(days),
     roomTypes: apiJson.roomTypes || null,
+    channels: apiJson.channels || null,
   };
 }

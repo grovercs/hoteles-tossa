@@ -83,6 +83,52 @@ function isBookingActiveOnDate(b: any, dateIso: string): boolean {
   return dateIso >= checkin && dateIso < checkout;
 }
 
+// Canal de una reserva: "Directa" si no viene por un canal/OTA, sino el nombre del canal.
+function channelOf(b: any): string {
+  const raw = String(b?.referrer ?? b?.referer ?? "").trim();
+  const directTokens = ["", "manual", "direct", "direct booking", "website", "phone", "walk-in", "walkin", "recepcion", "teléfono", "telefono", "venta directa"];
+  if (directTokens.includes(raw.toLowerCase())) return "Directa";
+  return raw || "Otro";
+}
+
+// Agrega ingresos por canal repartidos por noche dentro del rango (consistente con el total del periodo).
+function buildChannels(bookings: any[], dates: string[]) {
+  const revenue = new Map<string, number>();
+  const nights = new Map<string, number>();
+  const bookingKeys = new Map<string, Set<string>>();
+  for (const date of dates) {
+    for (const b of bookings) {
+      if (!isBookingActiveOnDate(b, date)) continue;
+      const ch = channelOf(b);
+      const total = bookingTotal(b);
+      const n = Number(b?.nights ?? b?.numberOfNights) || estimateNights(b);
+      const dayRev = n > 0 ? total / n : total;
+      revenue.set(ch, (revenue.get(ch) || 0) + dayRev);
+      nights.set(ch, (nights.get(ch) || 0) + 1);
+      const key = String(b?.reference ?? b?.bookId ?? `${b?.arrivalDate}-${b?.firstName}-${b?.lastName}`);
+      if (!bookingKeys.has(ch)) bookingKeys.set(ch, new Set());
+      bookingKeys.get(ch)!.add(key);
+    }
+  }
+  const byChannel = [...revenue.keys()].map((name) => ({
+    name,
+    revenue: round2(revenue.get(name) || 0),
+    nights: nights.get(name) || 0,
+    bookings: bookingKeys.get(name)?.size || 0,
+  })).sort((a, b) => b.revenue - a.revenue);
+
+  let directaRevenue = 0, canalesRevenue = 0, directaBookings = 0, canalesBookings = 0;
+  for (const c of byChannel) {
+    if (c.name === "Directa") { directaRevenue += c.revenue; directaBookings += c.bookings; }
+    else { canalesRevenue += c.revenue; canalesBookings += c.bookings; }
+  }
+  return {
+    directa: { revenue: round2(directaRevenue), bookings: directaBookings },
+    canales: { revenue: round2(canalesRevenue), bookings: canalesBookings },
+    byChannel,
+  };
+}
+
 // ---- Llamadas a Beds24 (V1 JSON) ----
 async function beds24Call(functionName: string, payload: any, apiKey: string, propKey: string) {
   const body = {
@@ -267,6 +313,7 @@ Deno.serve(async (req: Request) => {
     const days = aggregateDaily(bookings, dates, totalRooms);
     const totals = buildTotals(days);
     const months = buildMonths(days);
+    const channels = buildChannels(bookings, dates);
 
     // 3) Depuración: sumas crudas por cada campo candidato + muestra de la 1ª reserva.
     let sumBprice = 0, sumInvTotal = 0, sumInvPrice = 0, sumPriceTotal = 0;
@@ -302,6 +349,7 @@ Deno.serve(async (req: Request) => {
       totals,
       months,
       roomTypes: null,
+      channels,
       meta: {
         userId,
         bookingsCount: bookings.length,
