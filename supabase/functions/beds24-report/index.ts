@@ -114,17 +114,15 @@ const OTA_PATTERNS: [RegExp, string][] = [
   [/google/i, "Google"],
   [/despegar|amadeus|makemytrip/i, "OTA"],
 ];
-const PORTAL_DIRECTO_RE = /hostalet/i;
 
-// Canal de una reserva: nombre de la OTA, "Portal directo" (motor web de
-// Beds24) o "Directa" (reservas manuales / otro canal no-OTA). Todo cuenta.
+// Canal de una reserva: nombre de la OTA, o "Directa" (venta directa: portal
+// directo de Beds24 + reservas manuales + otra no-OTA). Todo cuenta.
 function saleChannelOf(b: any): string {
   const raw = String(b?.referer ?? b?.referrer ?? "").trim();
   for (const [re, name] of OTA_PATTERNS) {
     if (re.test(raw)) return name;
   }
-  if (PORTAL_DIRECTO_RE.test(raw)) return "Portal directo";
-  return "Directa"; // manual / otro canal no-OTA = venta directa
+  return "Directa"; // portal directo + manual + otra no-OTA = venta directa
 }
 
 // Agrega ingresos por canal repartidos por noche dentro del rango (consistente con el total del periodo).
@@ -141,7 +139,7 @@ function buildChannels(bookings: any[], dates: string[]) {
       const dayRev = n > 0 ? total / n : total;
       revenue.set(ch, (revenue.get(ch) || 0) + dayRev);
       nights.set(ch, (nights.get(ch) || 0) + roomsOf(b));
-      const key = String(b?.reference ?? b?.bookId ?? `${b?.arrivalDate}-${b?.firstName}-${b?.lastName}`);
+      const key = String(b?.bookId || b?.reference || `${b?.firstNight}-${b?.guestName}-${b?.price}`);
       if (!bookingKeys.has(ch)) bookingKeys.set(ch, new Set());
       bookingKeys.get(ch)!.add(key);
     }
@@ -153,11 +151,10 @@ function buildChannels(bookings: any[], dates: string[]) {
     bookings: bookingKeys.get(name)?.size || 0,
   })).sort((a, b) => b.revenue - a.revenue);
 
-  // Venta directa = Portal directo + Directa (manual/otra no-OTA). Canales = OTAs.
-  const DIRECTA_NAMES = new Set(["Directa", "Portal directo"]);
+  // Venta directa = "Directa" (portal + manual). Canales = OTAs (Booking.com, ...).
   let directaRevenue = 0, canalesRevenue = 0, directaBookings = 0, canalesBookings = 0;
   for (const c of byChannel) {
-    if (DIRECTA_NAMES.has(c.name)) { directaRevenue += c.revenue; directaBookings += c.bookings; }
+    if (c.name === "Directa") { directaRevenue += c.revenue; directaBookings += c.bookings; }
     else { canalesRevenue += c.revenue; canalesBookings += c.bookings; }
   }
   return {
