@@ -83,9 +83,11 @@ function eachDay(desde: string, hasta: string): string[] {
 
 function isBookingActiveOnDate(b: any, dateIso: string): boolean {
   if (!b) return false;
-  // Beds24 status: 0=Cancelada, 1=Confirmada, 2=Nueva, 3=Petición, 4=Black, 5=Inquiry
+  // Beds24 status: 0=Cancelada, 1=Confirmada, 2=Nueva, 3=Petición, 4=Black, 5=Inquiry.
+  // Contamos solo Confirmadas/Nuevas (1, 2), como hace el .xls en "Reservado";
+  // excluimos Cancelada (0), Petición (3), Black (4) e Inquiry (5).
   const st = String(b.status ?? "");
-  if (st === "0" || st === "4" || /^(cancelled|canceled|no-show|no show)$/i.test(st)) return false;
+  if (["0", "3", "4", "5"].includes(st) || /^(cancelled|canceled|no-show|no show)$/i.test(st)) return false;
   const checkin = b.arrivalDate || b.firstNight || b.checkin;
   if (!checkin) return false;
   // lastNight es la ULTIMA noche dormida (inclusiva); checkout = lastNight + 1
