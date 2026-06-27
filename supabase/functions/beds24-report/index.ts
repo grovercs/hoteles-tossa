@@ -95,8 +95,11 @@ function isBookingActiveOnDate(b: any, dateIso: string): boolean {
   return dateIso >= checkin && dateIso < checkout;
 }
 
-// Canales/OTAs conocidos. Si el `referer` no encaja con ninguno, es venta
-// directa (recepcion manual, motor de reservas web propio, telefono, walk-in).
+// Canales/OTAs conocidos. El portal directo de Beds24 (motor de reservas web
+// del hotel) se identifica por el id del motor (contiene "hostalet").
+// Solo las OTAs + el portal directo son VENTAS; el resto (reservas manuales
+// "grovercs", entradas internas de control, referer vacio) se excluyen del
+// informe de ventas porque no son ventas reales.
 const OTA_PATTERNS: [RegExp, string][] = [
   [/booking/i, "Booking.com"],
   [/airbnb/i, "Airbnb"],
@@ -110,16 +113,18 @@ const OTA_PATTERNS: [RegExp, string][] = [
   [/google/i, "Google"],
   [/despegar|amadeus|makemytrip/i, "OTA"],
 ];
+const PORTAL_DIRECTO_RE = /hostalet/i;
 
-// Canal de una reserva: nombre de la OTA si la reconoce, si no "Directa".
-function channelOf(b: any): string {
+// Canal de venta de una reserva: nombre de la OTA, "Directa" (portal directo),
+// o null si es una entrada interna de control que no debe contar como venta.
+function saleChannelOf(b: any): string | null {
   const raw = String(b?.referer ?? b?.referrer ?? "").trim();
-  if (!raw) return "Directa";
+  if (!raw) return null;
   for (const [re, name] of OTA_PATTERNS) {
     if (re.test(raw)) return name;
   }
-  // No reconocido como OTA => venta directa (recepcion o motor web propio).
-  return "Directa";
+  if (PORTAL_DIRECTO_RE.test(raw)) return "Directa";
+  return null; // interno: no es venta
 }
 
 // Agrega ingresos por canal repartidos por noche dentro del rango (consistente con el total del periodo).
@@ -130,7 +135,8 @@ function buildChannels(bookings: any[], dates: string[]) {
   for (const date of dates) {
     for (const b of bookings) {
       if (!isBookingActiveOnDate(b, date)) continue;
-      const ch = channelOf(b);
+      const ch = saleChannelOf(b);
+      if (!ch) continue; // entrada interna: no cuenta como venta
       const total = bookingTotal(b);
       const n = Number(b?.nights ?? b?.numberOfNights) || estimateNights(b);
       const dayRev = n > 0 ? total / n : total;
@@ -346,7 +352,11 @@ Deno.serve(async (req: Request) => {
       apiKey,
       propKey,
     );
-    const bookings = Array.isArray(bookingsResp) ? bookingsResp : bookingsResp?.getBookings || bookingsResp?.bookings || [];
+    const allBookings = Array.isArray(bookingsResp) ? bookingsResp : bookingsResp?.getBookings || bookingsResp?.bookings || [];
+    // Solo ventas reales: OTAs (Booking.com, ...) + portal directo (hostalhostalet-web).
+    // Se excluyen las entradas internas de control (reservas manuales "grovercs",
+    // referer vacio, etc.) porque no son ventas.
+    const bookings = allBookings.filter((b: any) => saleChannelOf(b) !== null);
 
     // 2) Días del rango + agregación.
     const dates = eachDay(desde, hasta);
