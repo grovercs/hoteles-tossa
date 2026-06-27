@@ -51,6 +51,13 @@ function toBeds24Date(iso: string): string {
   return iso.replaceAll("-", "");
 }
 
+function shiftDate(iso: string, days: number): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + days);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+
 function isoToLabel(iso: string): string {
   const [, m, d] = iso.split("-");
   return `${d}/${m}`;
@@ -292,16 +299,18 @@ Deno.serve(async (req: Request) => {
       return json({ error: "Faltan credenciales de Beds24 (BEDS24_API_KEY / BEDS24_PROP_KEY)." }, 500);
     }
 
-    // 1) Reservas que se solapan con el rango [desde, hasta] (no solo las
-    //    contenidas): arrival <= hasta  AND  departure >= desde. Asi entran
-    //    tambien las reservas que cruzan el limite del mes.
+    // 1) Reservas que se solapan con el rango [desde, hasta]. Se pide por
+    //    fecha de ENTRADA con un margen de 60 dias hacia atras (para captar
+    //    las reservas que llegan antes del rango pero siguen dentro de el).
+    //    Luego isBookingActiveOnDate filtra por noche dentro del rango.
+    //    (No mezclar arrivalTo con departureFrom: Beds24 exige arrivalFrom<=arrivalTo.)
     const bookingsResp = await beds24Call(
       "getBookings",
       {
         includeInvoice: true,
         includeInfoItems: false,
+        arrivalFrom: toBeds24Date(shiftDate(desde, -60)),
         arrivalTo: toBeds24Date(hasta),
-        departureFrom: toBeds24Date(desde),
       },
       apiKey,
       propKey,
