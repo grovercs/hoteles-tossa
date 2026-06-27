@@ -46,8 +46,8 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: corsHeaders });
 }
 
+// Beds24 getBookings exige fechas en formato YYYYMMDD.
 function toBeds24Date(iso: string): string {
-  // YYYY-MM-DD -> YYYYMMDD
   return iso.replaceAll("-", "");
 }
 
@@ -82,17 +82,22 @@ function eachDay(desde: string, hasta: string): string[] {
 }
 
 function isBookingActiveOnDate(b: any, dateIso: string): boolean {
-  if (!b || b.status === "Cancelled" || b.status === "No-show") return false;
-  const checkin = b.arrivalDate || b.firstNight || b.checkin; // campo real segun cuenta
-  const checkout = b.departureDate || b.lastNight || b.checkout;
-  if (!checkin || !checkout) return false;
-  // estancia: [checkin, checkout)
+  if (!b) return false;
+  // Beds24 status: 0=Cancelada, 1=Confirmada, 2=Nueva, 3=Petición, 4=Black, 5=Inquiry
+  const st = String(b.status ?? "");
+  if (st === "0" || st === "4" || /^(cancelled|canceled|no-show|no show)$/i.test(st)) return false;
+  const checkin = b.arrivalDate || b.firstNight || b.checkin;
+  if (!checkin) return false;
+  // lastNight es la ULTIMA noche dormida (inclusiva); checkout = lastNight + 1
+  let checkout = b.departureDate || b.checkout || null;
+  if (!checkout) checkout = b.lastNight ? shiftDate(b.lastNight, 1) : null;
+  if (!checkout) return false;
   return dateIso >= checkin && dateIso < checkout;
 }
 
 // Canal de una reserva: "Directa" si no viene por un canal/OTA, sino el nombre del canal.
 function channelOf(b: any): string {
-  const raw = String(b?.referrer ?? b?.referer ?? "").trim();
+  const raw = String(b?.referer ?? b?.referrer ?? "").trim();
   const directTokens = ["", "manual", "direct", "direct booking", "website", "phone", "walk-in", "walkin", "recepcion", "teléfono", "telefono", "venta directa"];
   if (directTokens.includes(raw.toLowerCase())) return "Directa";
   return raw || "Otro";
@@ -159,9 +164,10 @@ async function beds24Call(functionName: string, payload: any, apiKey: string, pr
   return data;
 }
 
-// Precio total de una reserva: probar varios campos que usa Beds24.
+// Precio total de una reserva. Beds24 trae el total en `price` (string "72.90");
+// invoice suele venir vacío. Priorizamos `price`.
 function bookingTotal(b: any): number {
-  const v = b?.invoice?.totalPrice ?? b?.invoice?.price ?? b?.price ?? b?.totalPrice ?? b?.priceTotal ?? 0;
+  const v = b?.price ?? b?.invoice?.totalPrice ?? b?.invoice?.price ?? b?.totalPrice ?? b?.priceTotal ?? 0;
   return Number(v) || 0;
 }
 
@@ -200,9 +206,12 @@ function aggregateDaily(bookings: any[], dates: string[], totalRooms: number) {
 
 function estimateNights(b: any): number {
   const c = b.arrivalDate || b.firstNight || b.checkin;
+  const hasDep = Boolean(b.departureDate);
   const o = b.departureDate || b.lastNight || b.checkout;
   if (!c || !o) return 1;
-  const ms = new Date(o).getTime() - new Date(c).getTime();
+  // lastNight es la última noche dormida (inclusiva) -> checkout = lastNight + 1
+  const checkoutIso = hasDep ? o : shiftDate(o, 1);
+  const ms = new Date(checkoutIso).getTime() - new Date(c).getTime();
   return Math.max(Math.round(ms / 86400000), 1);
 }
 
@@ -303,7 +312,8 @@ Deno.serve(async (req: Request) => {
     //    fecha de ENTRADA con un margen de 60 dias hacia atras (para captar
     //    las reservas que llegan antes del rango pero siguen dentro de el).
     //    Luego isBookingActiveOnDate filtra por noche dentro del rango.
-    //    (No mezclar arrivalTo con departureFrom: Beds24 exige arrivalFrom<=arrivalTo.)
+    //    Beds24 exige arrivalFrom<=arrivalTo, fechas en YYYYMMDD y un limit
+    //    explicito (sin el devuelve solo unas pocas por defecto; max 1000/llamada).
     const bookingsResp = await beds24Call(
       "getBookings",
       {
@@ -311,6 +321,8 @@ Deno.serve(async (req: Request) => {
         includeInfoItems: false,
         arrivalFrom: toBeds24Date(shiftDate(desde, -60)),
         arrivalTo: toBeds24Date(hasta),
+        limit: "1000",
+        offset: "0",
       },
       apiKey,
       propKey,
@@ -347,8 +359,21 @@ Deno.serve(async (req: Request) => {
       totalPrice: b0.totalPrice,
       priceTotal: b0.priceTotal,
       invoice: b0.invoice ? { price: b0.invoice.price, totalPrice: b0.invoice.totalPrice } : undefined,
+      referer: b0.referer,
+      referrer: b0.referrer,
+      apiSource: b0.apiSource,
       keys: Object.keys(b0),
     } : null;
+    // Volcado compacto de TODAS las reservas devueltas: para diagnosticar si
+    // el filtro de fechas actua o si Beds24 devuelve "las mas recientes".
+    const bookingsDump = bookings.slice(0, 60).map((b: any) => ({
+      firstNight: b.firstNight,
+      lastNight: b.lastNight,
+      status: b.status,
+      price: b.price,
+      referer: b.referer,
+      apiSource: b.apiSource,
+    }));
 
     return json({
       source: "api",
@@ -371,6 +396,7 @@ Deno.serve(async (req: Request) => {
           sumInvoicePrice: round2(sumInvPrice),
           sumInvoiceTotal: round2(sumInvTotal),
           sampleBooking,
+          bookingsDump,
         },
       },
     });

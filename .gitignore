@@ -10,3 +10,4 @@ public/Mayo/
 # Backups y parches temporales
 *.backup-*.jsx
 patch-mobile-browser-back-tabs-*.cjs
+supabase/.temp/

@@ -173,6 +173,7 @@ export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, 
       if (d) {
         info += ` — reservas: ${json.meta.bookingsCount}. Sumas crudas (candidatos): price=${d.sumBprice}€ · priceTotal=${d.sumPriceTotal}€ · invoice.price=${d.sumInvoicePrice}€ · invoice.totalPrice=${d.sumInvoiceTotal}€. Calculado: ${d.computedRevenue}€.`;
         if (d.sampleBooking) info += ` Muestra 1ª reserva: ${JSON.stringify(d.sampleBooking)}`;
+        if (Array.isArray(d.bookingsDump) && d.bookingsDump.length) info += ` Volcado reservas: ${JSON.stringify(d.bookingsDump)}`;
       }
       setApiInfo(info);
     } catch (e) {
