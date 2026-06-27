@@ -407,6 +407,29 @@ async function refreshAuthSession() {
   return refreshedSession;
 }
 
+function jwtExp(token) {
+  try {
+    if (!token) return null;
+    const parts = String(token).split(".");
+    if (parts.length < 2) return null;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return payload?.exp ? Number(payload.exp) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Devuelve una sesion con access_token valido; refresca si caduca en <120s.
+async function freshAccessToken() {
+  let session = readAuthSession();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const exp = jwtExp(session?.access_token);
+  if (!session?.access_token || (exp && exp - nowSec < 120)) {
+    session = await refreshAuthSession();
+  }
+  return session;
+}
+
 function readLocal() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -2803,12 +2826,18 @@ export default function HotelDailyControlApp() {
     setPwSavingId(id);
     setPwMsg({ id: null, type: "", text: "" });
     try {
+      const s = await freshAccessToken();
+      if (s?.access_token && s.access_token !== authSession?.access_token) setAuthSession(s);
+      if (!s?.access_token) {
+        setPwMsg({ id, type: "error", text: "Tu sesión ha caducado. Sal de la app y vuelve a entrar." });
+        return;
+      }
       const res = await fetch(`${SUPABASE_URL}/functions/v1/admin-set-password`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           apikey: SUPABASE_KEY,
-          Authorization: `Bearer ${authSession?.access_token || ""}`,
+          Authorization: `Bearer ${s.access_token}`,
         },
         body: JSON.stringify({ userId: id, newPassword: newPw }),
       });
@@ -6220,6 +6249,11 @@ export default function HotelDailyControlApp() {
                 supabaseUrl={SUPABASE_URL}
                 anonKey={SUPABASE_KEY}
                 accessToken={authSession?.access_token}
+                getAccessToken={async () => {
+                  const s = await freshAccessToken();
+                  if (s?.access_token && s.access_token !== authSession?.access_token) setAuthSession(s);
+                  return s?.access_token || "";
+                }}
               />
             </React.Suspense>
           )}

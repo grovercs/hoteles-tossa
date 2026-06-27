@@ -86,7 +86,7 @@ function ChartTooltip({ active, payload, label, unit }) {
   );
 }
 
-export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, accessToken }) {
+export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, accessToken, getAccessToken }) {
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
   const [parsing, setParsing] = useState(false);
@@ -147,11 +147,16 @@ export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, 
     }
     setApiLoading(true);
     try {
+      const token = typeof getAccessToken === "function" ? await getAccessToken() : (accessToken || "");
+      if (!token) {
+        setApiError("Tu sesión ha caducado. Sal de la app y vuelve a entrar.");
+        return;
+      }
       const res = await fetch(`${supabaseUrl}/functions/v1/beds24-report`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${accessToken || ""}`,
+          Authorization: `Bearer ${token}`,
           apikey: anonKey || "",
         },
         body: JSON.stringify({ desde: range.desde, hasta: range.hasta }),
@@ -163,7 +168,12 @@ export default function Beds24Reports({ currency = "€", supabaseUrl, anonKey, 
       const json = await res.json();
       setReport(buildReportFromApi(json));
       setFileName(`Beds24 API · ${fmtDateEs(range.desde)} - ${fmtDateEs(range.hasta)}`);
-      setApiInfo("Datos obtenidos en vivo desde Beds24.");
+      const d = json?.meta?.debug;
+      let info = "Datos obtenidos en vivo desde Beds24.";
+      if (d) {
+        info += ` — reservas: ${json.meta.bookingsCount}. Sumas crudas (candidatos): price=${d.sumBprice}€ · priceTotal=${d.sumPriceTotal}€ · invoice.price=${d.sumInvoicePrice}€ · invoice.totalPrice=${d.sumInvoiceTotal}€. Calculado: ${d.computedRevenue}€.`;
+      }
+      setApiInfo(info);
     } catch (e) {
       setApiError(e?.message || "No se pudo consultar Beds24. Sube un archivo .xls como alternativa.");
     } finally {
