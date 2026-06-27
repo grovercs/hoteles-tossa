@@ -97,9 +97,8 @@ function isBookingActiveOnDate(b: any, dateIso: string): boolean {
 
 // Canales/OTAs conocidos. El portal directo de Beds24 (motor de reservas web
 // del hotel) se identifica por el id del motor (contiene "hostalet").
-// Solo las OTAs + el portal directo son VENTAS; el resto (reservas manuales
-// "grovercs", entradas internas de control, referer vacio) se excluyen del
-// informe de ventas porque no son ventas reales.
+// TODO lo que hay en Beds24 cuenta (igual que el informe .xls); solo se
+// desglosa por canal. Las canceladas se excluyen via isBookingActiveOnDate.
 const OTA_PATTERNS: [RegExp, string][] = [
   [/booking/i, "Booking.com"],
   [/airbnb/i, "Airbnb"],
@@ -115,16 +114,15 @@ const OTA_PATTERNS: [RegExp, string][] = [
 ];
 const PORTAL_DIRECTO_RE = /hostalet/i;
 
-// Canal de venta de una reserva: nombre de la OTA, "Directa" (portal directo),
-// o null si es una entrada interna de control que no debe contar como venta.
-function saleChannelOf(b: any): string | null {
+// Canal de una reserva: nombre de la OTA, "Portal directo" (motor web de
+// Beds24) o "Directa" (reservas manuales / otro canal no-OTA). Todo cuenta.
+function saleChannelOf(b: any): string {
   const raw = String(b?.referer ?? b?.referrer ?? "").trim();
-  if (!raw) return null;
   for (const [re, name] of OTA_PATTERNS) {
     if (re.test(raw)) return name;
   }
-  if (PORTAL_DIRECTO_RE.test(raw)) return "Directa";
-  return null; // interno: no es venta
+  if (PORTAL_DIRECTO_RE.test(raw)) return "Portal directo";
+  return "Directa"; // manual / otro canal no-OTA = venta directa
 }
 
 // Agrega ingresos por canal repartidos por noche dentro del rango (consistente con el total del periodo).
@@ -136,12 +134,11 @@ function buildChannels(bookings: any[], dates: string[]) {
     for (const b of bookings) {
       if (!isBookingActiveOnDate(b, date)) continue;
       const ch = saleChannelOf(b);
-      if (!ch) continue; // entrada interna: no cuenta como venta
       const total = bookingTotal(b);
       const n = Number(b?.nights ?? b?.numberOfNights) || estimateNights(b);
       const dayRev = n > 0 ? total / n : total;
       revenue.set(ch, (revenue.get(ch) || 0) + dayRev);
-      nights.set(ch, (nights.get(ch) || 0) + 1);
+      nights.set(ch, (nights.get(ch) || 0) + roomsOf(b));
       const key = String(b?.reference ?? b?.bookId ?? `${b?.arrivalDate}-${b?.firstName}-${b?.lastName}`);
       if (!bookingKeys.has(ch)) bookingKeys.set(ch, new Set());
       bookingKeys.get(ch)!.add(key);
@@ -154,9 +151,11 @@ function buildChannels(bookings: any[], dates: string[]) {
     bookings: bookingKeys.get(name)?.size || 0,
   })).sort((a, b) => b.revenue - a.revenue);
 
+  // Venta directa = Portal directo + Directa (manual/otra no-OTA). Canales = OTAs.
+  const DIRECTA_NAMES = new Set(["Directa", "Portal directo"]);
   let directaRevenue = 0, canalesRevenue = 0, directaBookings = 0, canalesBookings = 0;
   for (const c of byChannel) {
-    if (c.name === "Directa") { directaRevenue += c.revenue; directaBookings += c.bookings; }
+    if (DIRECTA_NAMES.has(c.name)) { directaRevenue += c.revenue; directaBookings += c.bookings; }
     else { canalesRevenue += c.revenue; canalesBookings += c.bookings; }
   }
   return {
@@ -196,6 +195,12 @@ function bookingTotal(b: any): number {
   return Number(v) || 0;
 }
 
+// Número de habitaciones que ocupa una reserva (las agrupadas traen roomQty>1).
+function roomsOf(b: any): number {
+  const q = Number(b?.roomQty ?? b?.quantity ?? b?.rooms);
+  return q > 0 ? q : 1;
+}
+
 // ---- Agregación diaria ----
 function aggregateDaily(bookings: any[], dates: string[], totalRooms: number) {
   const days = dates.map((date) => {
@@ -210,7 +215,7 @@ function aggregateDaily(bookings: any[], dates: string[], totalRooms: number) {
       revenue += nights > 0 ? price / nights : price;
       guests += Number(b.guests || b.numberOfPeople || 0) || 0;
     }
-    const nightsOccupied = active.length;
+    const nightsOccupied = active.reduce((s: number, b: any) => s + roomsOf(b), 0);
     const available = Math.max(totalRooms - nightsOccupied, 0);
     const occupancyPct = totalRooms > 0 ? (nightsOccupied / totalRooms) * 100 : 0;
     return {
@@ -352,13 +357,11 @@ Deno.serve(async (req: Request) => {
       apiKey,
       propKey,
     );
-    const allBookings = Array.isArray(bookingsResp) ? bookingsResp : bookingsResp?.getBookings || bookingsResp?.bookings || [];
-    // Solo ventas reales: OTAs (Booking.com, ...) + portal directo (hostalhostalet-web).
-    // Se excluyen las entradas internas de control (reservas manuales "grovercs",
-    // referer vacio, etc.) porque no son ventas.
-    const bookings = allBookings.filter((b: any) => saleChannelOf(b) !== null);
+    const bookings = Array.isArray(bookingsResp) ? bookingsResp : bookingsResp?.getBookings || bookingsResp?.bookings || [];
 
-    // 2) Días del rango + agregación.
+    // 2) Días del rango + agregación. Cuentan todas las reservas de Beds24
+    //    (igual que el informe .xls); las canceladas se excluyen por status en
+    //    isBookingActiveOnDate.
     const dates = eachDay(desde, hasta);
     const days = aggregateDaily(bookings, dates, totalRooms);
     const totals = buildTotals(days);
