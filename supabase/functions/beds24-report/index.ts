@@ -95,12 +95,31 @@ function isBookingActiveOnDate(b: any, dateIso: string): boolean {
   return dateIso >= checkin && dateIso < checkout;
 }
 
-// Canal de una reserva: "Directa" si no viene por un canal/OTA, sino el nombre del canal.
+// Canales/OTAs conocidos. Si el `referer` no encaja con ninguno, es venta
+// directa (recepcion manual, motor de reservas web propio, telefono, walk-in).
+const OTA_PATTERNS: [RegExp, string][] = [
+  [/booking/i, "Booking.com"],
+  [/airbnb/i, "Airbnb"],
+  [/expedia/i, "Expedia"],
+  [/vrbo|homeaway/i, "Vrbo"],
+  [/tripadvisor|trip\.com/i, "Tripadvisor"],
+  [/agoda/i, "Agoda"],
+  [/hostelworld|hostelbookers/i, "Hostelworld"],
+  [/hotels\.com/i, "Hotels.com"],
+  [/hotwire|orbitz|priceline|kayak|trivago/i, "OTA"],
+  [/google/i, "Google"],
+  [/despegar|amadeus|makemytrip/i, "OTA"],
+];
+
+// Canal de una reserva: nombre de la OTA si la reconoce, si no "Directa".
 function channelOf(b: any): string {
   const raw = String(b?.referer ?? b?.referrer ?? "").trim();
-  const directTokens = ["", "manual", "direct", "direct booking", "website", "phone", "walk-in", "walkin", "recepcion", "teléfono", "telefono", "venta directa"];
-  if (directTokens.includes(raw.toLowerCase())) return "Directa";
-  return raw || "Otro";
+  if (!raw) return "Directa";
+  for (const [re, name] of OTA_PATTERNS) {
+    if (re.test(raw)) return name;
+  }
+  // No reconocido como OTA => venta directa (recepcion o motor web propio).
+  return "Directa";
 }
 
 // Agrega ingresos por canal repartidos por noche dentro del rango (consistente con el total del periodo).
